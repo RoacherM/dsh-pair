@@ -1,0 +1,21 @@
+{
+  "name": "dsh-pair-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-force-exit test/"
+  },
+  "dependencies": {
+    "jsqr": "^1.4.0",
+    "marked": "^18.0.14",
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tweetnacl": "^1.0.3",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "ws": "^8.18.0"
+  }
+}
