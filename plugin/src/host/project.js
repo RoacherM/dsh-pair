@@ -3,14 +3,27 @@
  * a turn becomes user bubbles, assistant Markdown and one-line tool rows.
  *
  * Items:
- *   { k:'user', seq, time, text, images, source }
+ *   { k:'user', seq, time, text, images, pics?, source }
  *   { k:'assistant', seq, time, text }
  *   { k:'tool', seq, time, callId, name, summary }
- *   { k:'result', seq, callId, error, preview }        (merged into its tool row by the phone)
+ *   { k:'result', seq, callId, error, preview, pics? } (merged into its tool row by the phone)
  *   { k:'end', seq, time, reason }                    (a turn ended; reason ≠ completed is shown)
+ *
+ * `pics` are [{id, w, h}]: the phone fetches the bytes with `image.get`. Items leave here with a
+ * non-enumerable `refs` (the full attachment references), which phones.js keeps on the desktop.
  */
+import { imageRefsOf, picOf } from './images.js';
 
 const MAX_TEXT = 20_000;
+const MAX_PICS = 8;
+
+function withPics(item, content) {
+  const refs = imageRefsOf(content).slice(0, MAX_PICS);
+  if (!refs.length) return item;
+  item.pics = refs.map(picOf);
+  Object.defineProperty(item, 'refs', { value: refs, enumerable: false });
+  return item;
+}
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max)}…` : text);
 
 function textOf(content) {
@@ -44,7 +57,7 @@ export function projectEvent(event) {
       const images = Array.isArray(content) ? content.filter((part) => part?.type === 'image').length : 0;
       const text = clip(textOf(content), MAX_TEXT);
       if (!text && !images) return null;
-      return { k: 'user', seq, time, text, images, source: data?.source?.kind ?? 'user' };
+      return withPics({ k: 'user', seq, time, text, images, source: data?.source?.kind ?? 'user' }, content);
     }
     case 'assistant/message': {
       const text = clip(textOf(data?.message?.content), MAX_TEXT);
@@ -56,7 +69,7 @@ export function projectEvent(event) {
       const message = data?.message ?? {};
       const error = data?.error !== undefined || message.isError === true;
       const preview = clip(textOf(message.content).trim(), 400);
-      return { k: 'result', seq, callId: data?.callId ?? message.toolCallId, error, preview };
+      return withPics({ k: 'result', seq, callId: data?.callId ?? message.toolCallId, error, preview }, message.content);
     }
     case 'turn/end':
       return { k: 'end', seq, time, reason: data?.reason?.kind ?? 'completed' };

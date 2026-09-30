@@ -14442,6 +14442,87 @@ function createAway({ ctx, state, config, log = () => {
   };
 }
 
+// src/host/images.js
+var PHONE_MAX_EDGE = 1600;
+var PHONE_MAX_BYTES = 600 * 1024;
+var CHUNK_BYTES = 192 * 1024;
+var FALLBACK_MAX_BYTES = 4 * 1024 * 1024;
+function imageRefsOf(content) {
+  if (!Array.isArray(content)) return [];
+  return content.filter((part) => part?.type === "image" && typeof part.attachment?.attachmentId === "string").map((part) => part.attachment);
+}
+var picOf = (ref) => ({ id: ref.attachmentId, w: ref.width ?? null, h: ref.height ?? null });
+function fitWithin(width, height, max = PHONE_MAX_EDGE) {
+  const w = Number(width) || max;
+  const h = Number(height) || max;
+  const scale = Math.min(1, max / Math.max(w, h));
+  return { width: Math.max(1, Math.round(w * scale)), height: Math.max(1, Math.round(h * scale)) };
+}
+function createImages({ attachments, cacheBytes = 24 * 1024 * 1024 }) {
+  const cache = /* @__PURE__ */ new Map();
+  const sizes = /* @__PURE__ */ new Map();
+  let total = 0;
+  function evict() {
+    for (const [id] of cache) {
+      if (total <= cacheBytes || cache.size <= 1) break;
+      total -= sizes.get(id) ?? 0;
+      sizes.delete(id);
+      cache.delete(id);
+    }
+  }
+  async function produce(ref) {
+    const service = attachments();
+    if (!service) throw new Error("\u7535\u8111\u4E0A\u7684\u56FE\u7247\u670D\u52A1\u4E0D\u53EF\u7528");
+    if (typeof service.readImageRequest === "function") {
+      const target = fitWithin(ref.width, ref.height);
+      const variant2 = await service.readImageRequest(ref, { ...target, maxBytes: PHONE_MAX_BYTES }, AbortSignal.timeout(3e4));
+      return { data: variant2.data, mediaType: variant2.mediaType, width: variant2.width, height: variant2.height };
+    }
+    const stored = await service.readImage(ref, AbortSignal.timeout(3e4));
+    if (stored.data.length > FALLBACK_MAX_BYTES) throw new Error("\u56FE\u7247\u592A\u5927\uFF0C\u65E0\u6CD5\u53D1\u5230\u624B\u673A");
+    return { data: stored.data, mediaType: stored.ref.mediaType, width: stored.ref.width, height: stored.ref.height };
+  }
+  function variant(ref) {
+    const id = ref.attachmentId;
+    const hit = cache.get(id);
+    if (hit) {
+      cache.delete(id);
+      cache.set(id, hit);
+      return hit;
+    }
+    const pending = produce(ref).then((value) => {
+      if (cache.get(id) === pending) {
+        sizes.set(id, value.data.length);
+        total += value.data.length;
+        evict();
+      }
+      return value;
+    });
+    pending.catch(() => {
+      if (cache.get(id) === pending) cache.delete(id);
+    });
+    cache.set(id, pending);
+    return pending;
+  }
+  async function chunk(ref, offset = 0) {
+    const value = await variant(ref);
+    const start = Math.max(0, Math.min(Math.floor(offset) || 0, value.data.length));
+    const slice = value.data.subarray(start, start + CHUNK_BYTES);
+    const end = start + slice.length;
+    return {
+      id: ref.attachmentId,
+      mediaType: value.mediaType,
+      width: value.width,
+      height: value.height,
+      total: value.data.length,
+      offset: start,
+      data: b64(slice),
+      done: end >= value.data.length
+    };
+  }
+  return { chunk, cached: () => cache.size };
+}
+
 // src/host/pairing.js
 var OFFER_MS = 10 * 6e4;
 function createPairing({ relayUrl, desktopId, boxKeys, desktopName, onChange = () => {
@@ -14526,6 +14607,14 @@ import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/host/project.js
 var MAX_TEXT = 2e4;
+var MAX_PICS = 8;
+function withPics(item, content) {
+  const refs = imageRefsOf(content).slice(0, MAX_PICS);
+  if (!refs.length) return item;
+  item.pics = refs.map(picOf);
+  Object.defineProperty(item, "refs", { value: refs, enumerable: false });
+  return item;
+}
 var clip = (text, max) => text.length > max ? `${text.slice(0, max)}\u2026` : text;
 function textOf(content) {
   if (typeof content === "string") return content;
@@ -14558,7 +14647,7 @@ function projectEvent(event) {
       const images = Array.isArray(content) ? content.filter((part) => part?.type === "image").length : 0;
       const text = clip(textOf(content), MAX_TEXT);
       if (!text && !images) return null;
-      return { k: "user", seq, time, text, images, source: data?.source?.kind ?? "user" };
+      return withPics({ k: "user", seq, time, text, images, source: data?.source?.kind ?? "user" }, content);
     }
     case "assistant/message": {
       const text = clip(textOf(data?.message?.content), MAX_TEXT);
@@ -14570,7 +14659,7 @@ function projectEvent(event) {
       const message = data?.message ?? {};
       const error = data?.error !== void 0 || message.isError === true;
       const preview = clip(textOf(message.content).trim(), 400);
-      return { k: "result", seq, callId: data?.callId ?? message.toolCallId, error, preview };
+      return withPics({ k: "result", seq, callId: data?.callId ?? message.toolCallId, error, preview }, message.content);
     }
     case "turn/end":
       return { k: "end", seq, time, reason: data?.reason?.kind ?? "completed" };
@@ -14597,7 +14686,8 @@ function streamText(stream = []) {
 var WATCH_WINDOW = { minMessages: 24, minTurns: 2 };
 var MAX_SNAPSHOT_ITEMS = 120;
 var LIVE_THROTTLE_MS = 120;
-function createPhones({ ctx, state, pairing, away, push, link: getLink, log = () => {
+var MAX_KNOWN_IMAGES = 400;
+function createPhones({ ctx, state, pairing, away, push, images, link: getLink, log = () => {
 }, onChange = () => {
 } }) {
   const peers = /* @__PURE__ */ new Map();
@@ -14644,7 +14734,17 @@ function createPhones({ ctx, state, pairing, away, push, link: getLink, log = ()
     for (const peer of peers.values()) event(peer, ev, payload);
   }
   function open(cid) {
-    peers.set(cid, { cid, stage: "hello", cipher: null, device: null, watch: null });
+    peers.set(cid, { cid, stage: "hello", cipher: null, device: null, watch: null, images: /* @__PURE__ */ new Map() });
+  }
+  function share(peer, items) {
+    for (const item of items) {
+      for (const ref of item.refs ?? []) {
+        peer.images.delete(ref.attachmentId);
+        peer.images.set(ref.attachmentId, ref);
+        if (peer.images.size > MAX_KNOWN_IMAGES) peer.images.delete(peer.images.keys().next().value);
+      }
+    }
+    return items;
   }
   function close(cid) {
     const peer = peers.get(cid);
@@ -14748,6 +14848,12 @@ function createPhones({ ctx, state, pairing, away, push, link: getLink, log = ()
       await methods["session.prompt"](peer, { sessionId, text, timeZone: p.timeZone });
       return { sessionId };
     },
+    "image.get": (peer, p) => {
+      const ref = peer.images.get(String(p.id ?? ""));
+      if (!ref) throw new Error("\u8FD9\u5F20\u56FE\u7247\u4E0D\u5728\u5DF2\u6253\u5F00\u7684\u4F1A\u8BDD\u91CC");
+      if (!images) throw new Error("\u7535\u8111\u4E0A\u7684\u56FE\u7247\u670D\u52A1\u4E0D\u53EF\u7528");
+      return images.chunk(ref, Number(p.offset) || 0);
+    },
     "pending.list": () => ({ pending: away.pending() }),
     "pending.answer": (peer, p) => ({ ok: away.answer(String(p.id), p) }),
     "away.set": async (peer, p) => ({ away: await away.set(p.on === true) }),
@@ -14801,6 +14907,7 @@ function createPhones({ ctx, state, pairing, away, push, link: getLink, log = ()
     if (values.title) titles.set(sessionId, values.title);
     let items = projectRecords(snapshot.records);
     if (items.length > MAX_SNAPSHOT_ITEMS) items = items.slice(-MAX_SNAPSHOT_ITEMS);
+    share(peer, items);
     w.live = snapshot.activeAttempt ? streamText(snapshot.activeAttempt.stream) : "";
     w.attemptId = snapshot.activeAttempt?.attemptId;
     pump(peer, w, iterator);
@@ -14842,7 +14949,7 @@ function createPhones({ ctx, state, pairing, away, push, link: getLink, log = ()
               w.live = "";
               w.liveSent = "";
             }
-            event(peer, "items", { sessionId: w.sessionId, items: [item] });
+            event(peer, "items", { sessionId: w.sessionId, items: share(peer, [item]) });
           }
         } else if (frame.type === "assistant-stream") {
           const f = frame.frame;
@@ -14879,7 +14986,7 @@ function createPhones({ ctx, state, pairing, away, push, link: getLink, log = ()
       beforeSeq,
       turnWindow: WATCH_WINDOW
     }, AbortSignal.timeout(2e4));
-    return { items: projectRecords(page.records), hasMore: page.hasMore, firstSeq: page.records?.[0]?.event?.seq ?? null };
+    return { items: share(peer, projectRecords(page.records)), hasMore: page.hasMore, firstSeq: page.records?.[0]?.event?.seq ?? null };
   }
   return {
     open,
@@ -15304,7 +15411,8 @@ function apply(ctx, config = {}) {
       titleOf: (id) => phones?.titleOf(id) ?? Promise.resolve(void 0),
       notify: (payload) => push.notify(payload)
     });
-    phones = createPhones({ ctx, state, pairing, away, push, link: () => link, log, onChange: () => changes.bump() });
+    const images = createImages({ attachments: () => ctx.get?.("attachments") });
+    phones = createPhones({ ctx, state, pairing, away, push, images, link: () => link, log, onChange: () => changes.bump() });
     link = createRelayLink({
       relayUrl,
       desktopId,

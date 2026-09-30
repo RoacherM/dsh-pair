@@ -1,7 +1,7 @@
 // Simulated desktop for UI testing: real dsh-pair host code + fake DSH services + real relay.
 // Prints a pairing link; auto-approves pairing; streams a fake agent reply to every prompt.
 //   node dev/fake-desktop.mjs
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply } from '../plugin/src/host/index.js';
@@ -18,6 +18,19 @@ const records = [
   { type: 'event', event: { type: 'assistant/message', seq: 4, time: Date.now() - 580000, data: { message: { content: [{ type: 'text', text: '找到了：第 3 行循环条件写成了 `i < lines.length - 1`，所以**最后一行被跳过**。\n\n```ts\nfor (let i = 0; i < lines.length; i++) {\n```\n\n要我直接修改并跑测试吗？' }] } } } },
   { type: 'event', event: { type: 'turn/end', seq: 5, time: Date.now() - 579000, data: { reason: { kind: 'completed' } } } },
 ];
+// A screenshot tool result with an image, as DSH records it (FAKE_IMAGE: any PNG/JPEG on this Mac).
+if (process.env.FAKE_IMAGE) {
+  const image = await readFile(process.env.FAKE_IMAGE);
+  const png = image[0] === 0x89;
+  const width = png ? image.readUInt32BE(16) : 1280;
+  const height = png ? image.readUInt32BE(20) : 720;
+  const shot = { attachmentId: 'att-fake-shot', mediaType: png ? 'image/png' : 'image/jpeg', bytes: image.length, width, height, name: 'screen.png' };
+  records.push(
+    { type: 'event', event: { type: 'tool/call', seq: 6, time: Date.now() - 500000, data: { callId: 'c6', name: 'computer_screenshot', arguments: '{"computer_id":"omarchy-local"}' } } },
+    { type: 'event', event: { type: 'tool/result', seq: 7, time: Date.now() - 499000, data: { callId: 'c6', message: { content: [{ type: 'text', text: `Screenshot of omarchy-local: ${width}×${height}` }, { type: 'image', attachment: shot }] } } } },
+  );
+  globalThis.fakeAttachments = { async readImageRequest(ref, target) { return { data: image, mediaType: shot.mediaType, width: target.width, height: target.height }; } };
+}
 const sessions = [
   { sessionId: 's1', title: '修复 parser 漏行', cwd: '/Users/me/proj', running: false, updatedAt: Date.now() - 579000 },
   { sessionId: 's2', title: '写周报', cwd: '/Users/me/notes', running: false, updatedAt: Date.now() - 86400000 },
@@ -72,6 +85,7 @@ const ctx = {
   agents: { roots: () => [{ session }], list: () => [{ session }], get: (id) => (id === 's1' ? { session } : undefined) },
   permissionPresets: { current: (s) => presets.get(s.id), set: (s, n) => presets.set(s.id, n), resolve: (n) => ({ name: n }) },
   workspaceRegistry: { list: () => [{ id: 'w1', path: '/Users/me/proj', title: 'proj' }, { id: 'w2', path: '/Users/me/notes', title: 'notes' }] },
+  get: (name) => (name === 'attachments' ? globalThis.fakeAttachments : undefined),
 };
 
 apply(ctx, { relayUrl: RELAY, dataDir: process.env.DATA ?? await mkdtemp(join(tmpdir(), 'dsh-pair-fake-')) });

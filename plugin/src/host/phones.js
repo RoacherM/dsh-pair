@@ -12,8 +12,9 @@ import { projectEvent, projectRecords, streamText } from './project.js';
 const WATCH_WINDOW = { minMessages: 24, minTurns: 2 };
 const MAX_SNAPSHOT_ITEMS = 120;
 const LIVE_THROTTLE_MS = 120;
+const MAX_KNOWN_IMAGES = 400;
 
-export function createPhones({ ctx, state, pairing, away, push, link: getLink, log = () => {}, onChange = () => {} }) {
+export function createPhones({ ctx, state, pairing, away, push, images, link: getLink, log = () => {}, onChange = () => {} }) {
   const peers = new Map(); // cid → peer
   const titles = new Map();
 
@@ -52,7 +53,19 @@ export function createPhones({ ctx, state, pairing, away, push, link: getLink, l
   function broadcast(ev, payload) { for (const peer of peers.values()) event(peer, ev, payload); }
 
   function open(cid) {
-    peers.set(cid, { cid, stage: 'hello', cipher: null, device: null, watch: null });
+    peers.set(cid, { cid, stage: 'hello', cipher: null, device: null, watch: null, images: new Map() });
+  }
+
+  /** Items about to go to `peer`: remember their images, so `image.get` serves only what it was shown. */
+  function share(peer, items) {
+    for (const item of items) {
+      for (const ref of item.refs ?? []) {
+        peer.images.delete(ref.attachmentId);
+        peer.images.set(ref.attachmentId, ref);
+        if (peer.images.size > MAX_KNOWN_IMAGES) peer.images.delete(peer.images.keys().next().value);
+      }
+    }
+    return items;
   }
 
   function close(cid) {
@@ -145,6 +158,12 @@ export function createPhones({ ctx, state, pairing, away, push, link: getLink, l
       await methods['session.prompt'](peer, { sessionId, text, timeZone: p.timeZone });
       return { sessionId };
     },
+    'image.get': (peer, p) => {
+      const ref = peer.images.get(String(p.id ?? ''));
+      if (!ref) throw new Error('这张图片不在已打开的会话里');
+      if (!images) throw new Error('电脑上的图片服务不可用');
+      return images.chunk(ref, Number(p.offset) || 0);
+    },
     'pending.list': () => ({ pending: away.pending() }),
     'pending.answer': (peer, p) => ({ ok: away.answer(String(p.id), p) }),
     'away.set': async (peer, p) => ({ away: await away.set(p.on === true) }),
@@ -193,6 +212,7 @@ export function createPhones({ ctx, state, pairing, away, push, link: getLink, l
     if (values.title) titles.set(sessionId, values.title);
     let items = projectRecords(snapshot.records);
     if (items.length > MAX_SNAPSHOT_ITEMS) items = items.slice(-MAX_SNAPSHOT_ITEMS);
+    share(peer, items);
     w.live = snapshot.activeAttempt ? streamText(snapshot.activeAttempt.stream) : '';
     w.attemptId = snapshot.activeAttempt?.attemptId;
     pump(peer, w, iterator);
@@ -228,7 +248,7 @@ export function createPhones({ ctx, state, pairing, away, push, link: getLink, l
           const item = projectEvent(frame.event);
           if (item) {
             if (item.k === 'assistant') { w.live = ''; w.liveSent = ''; }
-            event(peer, 'items', { sessionId: w.sessionId, items: [item] });
+            event(peer, 'items', { sessionId: w.sessionId, items: share(peer, [item]) });
           }
         } else if (frame.type === 'assistant-stream') {
           const f = frame.frame;
@@ -252,7 +272,7 @@ export function createPhones({ ctx, state, pairing, away, push, link: getLink, l
     const page = await ctx.sessionController.page({
       address: { kind: 'session', sessionId }, throughSeq: w?.cursor ?? beforeSeq, beforeSeq, turnWindow: WATCH_WINDOW,
     }, AbortSignal.timeout(20_000));
-    return { items: projectRecords(page.records), hasMore: page.hasMore, firstSeq: page.records?.[0]?.event?.seq ?? null };
+    return { items: share(peer, projectRecords(page.records)), hasMore: page.hasMore, firstSeq: page.records?.[0]?.event?.seq ?? null };
   }
 
   return {

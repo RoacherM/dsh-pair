@@ -57,6 +57,89 @@ function toast(text, kind = '') {
   requestAnimationFrame(() => el.classList.add('show'));
   setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 2600);
 }
+// ------------------------------------------------------------------ images --
+// Items carry {id, w, h}; the bytes come from the desktop in chunks (`image.get`), only once an
+// image scrolls into view, two at a time, and stay as object URLs for the most recent ones.
+const MAX_CACHED_IMAGES = 60;
+const imageUrls = new Map(); // id → Promise<objectURL>
+const imageQueue = [];
+let imageActive = 0;
+
+function runImageQueue() {
+  while (imageActive < 2 && imageQueue.length) {
+    const job = imageQueue.shift();
+    imageActive++;
+    job().finally(() => { imageActive--; runImageQueue(); });
+  }
+}
+
+async function fetchImage(id) {
+  const parts = [];
+  let offset = 0;
+  let meta;
+  for (;;) {
+    const r = await app.link.rpc('image.get', { id, offset }, 60_000);
+    const bytes = unb64(r.data);
+    parts.push(bytes);
+    meta = r;
+    offset = r.offset + bytes.length;
+    if (r.done || !bytes.length) break;
+  }
+  return URL.createObjectURL(new Blob(parts, { type: meta.mediaType }));
+}
+
+function imageUrl(id) {
+  const hit = imageUrls.get(id);
+  if (hit) { imageUrls.delete(id); imageUrls.set(id, hit); return hit; }
+  const pending = new Promise((resolve, reject) => imageQueue.push(() => fetchImage(id).then(resolve, reject)));
+  runImageQueue();
+  pending.catch(() => imageUrls.get(id) === pending && imageUrls.delete(id));
+  imageUrls.set(id, pending);
+  while (imageUrls.size > MAX_CACHED_IMAGES) {
+    const [oldId, oldUrl] = imageUrls.entries().next().value;
+    imageUrls.delete(oldId);
+    oldUrl.then((url) => URL.revokeObjectURL(url), () => {});
+  }
+  return pending;
+}
+
+function loadPic(el) {
+  if (el.dataset.state === 'loading' || el.dataset.state === 'ok') return;
+  el.dataset.state = 'loading';
+  imageUrl(el.dataset.id).then(
+    (url) => { $('img', el).src = url; el.dataset.state = 'ok'; },
+    (e) => { el.dataset.state = 'err'; $('.pic-note', el).textContent = `图片加载失败：${e.message}。点按重试`; },
+  );
+}
+
+const picObserver = 'IntersectionObserver' in window
+  ? new IntersectionObserver((entries) => {
+    for (const entry of entries) if (entry.isIntersecting) { picObserver.unobserve(entry.target); loadPic(entry.target); }
+  }, { rootMargin: '300px' })
+  : null;
+
+function openViewer(src) {
+  const close = () => viewer.remove();
+  const viewer = h('div', { class: 'viewer', onClick: close }, h('img', { src, alt: '图片' }));
+  document.body.append(viewer);
+}
+
+function picsNode(pics) {
+  if (!Array.isArray(pics) || !pics.length) return null;
+  return h('div', { class: 'pics' }, pics.map((pic) => {
+    const ratio = pic.w && pic.h ? `${pic.w} / ${pic.h}` : '4 / 3';
+    const el = h('div', {
+      class: 'pic', 'data-id': pic.id, style: { aspectRatio: ratio },
+      onClick: () => {
+        if (el.dataset.state === 'ok') openViewer($('img', el).src);
+        else if (el.dataset.state === 'err') { el.dataset.state = ''; $('.pic-note', el).textContent = ''; loadPic(el); }
+      },
+    }, h('img', { alt: '图片' }), h('span', { class: 'pic-note' }));
+    if (picObserver) picObserver.observe(el); else loadPic(el);
+    return el;
+  }));
+}
+
 const ICON = {
   back: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
   gear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 01-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 010-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 014 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 010 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>',
@@ -472,7 +555,8 @@ function itemNode(item) {
   const s = app.session;
   switch (item.k) {
     case 'user':
-      return h('div', { class: 'msg user' }, h('div', { class: 'bubble' }, item.text, item.images ? h('span', { class: 'muted small' }, ` [${item.images} 张图片]`) : null),
+      return h('div', { class: 'msg user' }, h('div', { class: 'bubble' }, item.text,
+        item.pics?.length ? picsNode(item.pics) : item.images ? h('span', { class: 'muted small' }, ` [${item.images} 张图片]`) : null),
         item.source && item.source !== 'user' ? h('div', { class: 'src' }, item.source === 'schedule' ? '定时任务' : item.source) : null);
     case 'assistant':
       return h('div', { class: 'msg assistant md', html: md(item.text) });
@@ -495,6 +579,11 @@ function applyResult(item) {
   if (!node) return;
   node.classList.add(item.error ? 'err' : 'done');
   $('.tool-out', node).textContent = item.preview || (item.error ? '失败' : '（无输出）');
+  // Images of the result (screenshots) show under the row, visible without opening it.
+  if (item.pics?.length && !node.dataset.pics) {
+    node.dataset.pics = '1';
+    node.after(picsNode(item.pics));
+  }
 }
 
 function addItem(item, live) {

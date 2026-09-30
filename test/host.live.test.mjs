@@ -54,6 +54,12 @@ function fakeCtx() {
     agents: { roots: () => [{ session }], list: () => [{ session }], get: (id) => (id === 's1' ? { session } : undefined) },
     permissionPresets: { current: (s) => presets.get(s.id), set: (s, name) => presets.set(s.id, name), resolve: (n) => ({ name: n }) },
     workspaceRegistry: { list: () => [{ id: 'w1', path: '/tmp/proj', title: 'proj' }] },
+    // DSH's attachment service: a phone-sized variant of 300 KB, so it arrives in several chunks.
+    get: (name) => (name === 'attachments' ? {
+      async readImageRequest(ref, target) {
+        return { data: Uint8Array.from({ length: 300_000 }, (_, i) => i % 256), mediaType: 'image/jpeg', width: target.width, height: target.height };
+      },
+    } : undefined),
   };
   return { ctx, routes, disposers, prompts, presets, followPush: (f) => followPush(f) };
 }
@@ -116,9 +122,28 @@ test('pair, browse, prompt, live stream, away approval — through the real rela
   f.followPush({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: 'a1', revision: 1, index: 0, time: 1, chunk: { type: 'text-delta', index: 0, text: '正在' } } });
   f.followPush({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: 'a1', revision: 1, index: 1, time: 1, chunk: { type: 'text-delta', index: 0, text: '思考' } } });
   assert.equal((await nextEvent('live')).text, '正在思考');
-  f.followPush({ type: 'event', event: { type: 'tool/result', seq: 4, time: 4, data: { callId: 'c1', message: { content: [{ type: 'text', text: 'file.txt' }] } } } });
+  const shot = { attachmentId: 'att-shot', mediaType: 'image/png', bytes: 800_000, width: 2560, height: 1440, name: 'macmini.png' };
+  f.followPush({ type: 'event', event: { type: 'tool/result', seq: 4, time: 4, data: { callId: 'c1', message: { content: [{ type: 'text', text: 'file.txt' }, { type: 'image', attachment: shot }] } } } });
   const items = await nextEvent('items');
   assert.equal(items.items[0].k, 'result');
+  assert.deepEqual(items.items[0].pics, [{ id: 'att-shot', w: 2560, h: 1440 }]);
+  assert.equal(items.items[0].refs, undefined, 'the full reference stays on the desktop');
+
+  // --- the phone fetches that screenshot in chunks, end to end encrypted
+  const received = [];
+  let chunk; let offset = 0;
+  do {
+    chunk = await rpc('image.get', { id: 'att-shot', offset });
+    const bytes = unb64(chunk.data);
+    received.push(bytes);
+    offset = chunk.offset + bytes.length;
+  } while (!chunk.done);
+  assert.ok(received.length >= 2, 'several chunks');
+  assert.equal(offset, 300_000);
+  assert.equal(chunk.mediaType, 'image/jpeg');
+  assert.deepEqual([chunk.width, chunk.height], [1600, 900]);
+  assert.equal(received.reduce((n, b) => n + b.length, 0), chunk.total);
+  await assert.rejects(rpc('image.get', { id: 'att-never-shown', offset: 0 }), /不在已打开的会话里/);
 
   await rpc('session.prompt', { sessionId: 's1', text: '继续' });
   assert.equal(f.prompts[0].content[0].text, '继续');

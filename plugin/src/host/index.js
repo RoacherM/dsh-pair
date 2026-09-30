@@ -8,6 +8,7 @@
  */
 import { desktopIdFor } from '../../../shared/e2e.js';
 import { createAway } from './away.js';
+import { createImages } from './images.js';
 import { createPairing } from './pairing.js';
 import { createPhones } from './phones.js';
 import { createPush } from './push.js';
@@ -49,7 +50,9 @@ export function apply(ctx, config = {}) {
       titleOf: (id) => phones?.titleOf(id) ?? Promise.resolve(undefined),
       notify: (payload) => push.notify(payload),
     });
-    phones = createPhones({ ctx, state, pairing, away, push, link: () => link, log, onChange: () => changes.bump() });
+    // Looked up per request: the attachments service is optional and may arrive after this plugin.
+    const images = createImages({ attachments: () => ctx.get?.('attachments') });
+    phones = createPhones({ ctx, state, pairing, away, push, images, link: () => link, log, onChange: () => changes.bump() });
 
     link = createRelayLink({
       relayUrl, desktopId, signKeys: state.signKeys, log,
