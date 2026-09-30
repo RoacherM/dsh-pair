@@ -1,4 +1,4 @@
-# dsh-pair：用手机控制 DSH
+# dsh-pair：远程控制（Remote Control）
 
 扫码配对后，在 iPhone（PWA）上可以：看会话列表和实时输出、发消息（排队或插话）、停止、新建会话、审批和回答提问（离开模式），并在任务完成、需要审批或出错时收到推送。
 
@@ -17,7 +17,7 @@ iPhone PWA ──wss──▶ Cloudflare Worker + Durable Object（中继，只�
 |---|---|
 | `shared/e2e.js` | 握手、加密帧、配对链接、中继签名（桌面和手机共用） |
 | `relay/` | Cloudflare Worker：`/v1/desktop/<id>`（Ed25519 签名占位）、`/v1/client/<id>`、`/v1/status/<id>`，其余路径是静态 PWA |
-| `plugin/` | DSH 插件 `@local/dsh-pair`：Host 端（中继连接、配对、RPC→`sessionController`、审批/提问拦截、离开模式、Web Push）；Client 端（左侧栏「手机」页） |
+| `plugin/` | DSH 插件 `@local/dsh-pair`：Host 端（中继连接、配对、RPC→`sessionController`、审批/提问拦截、离开模式、Web Push）；Client 端（左侧栏「远程控制」页） |
 | `app/` | PWA 源码，`node app/build.mjs` 输出到 `relay/public/` |
 | `test/` | `e2e.test.mjs` 加密单测；`host.live.test.mjs` 用模拟 DSH、真实中继和模拟手机跑完整链路 |
 | `dev/` | `fake-desktop.mjs` 模拟电脑；`ui-smoke.mjs` 用无头 Chrome 模拟 iPhone 截图 |
@@ -37,6 +37,6 @@ cd plugin && NODE_PATH=../node_modules node build.mjs # 构建插件
 
 ## 离开模式
 
-开启后，当前运行的会话（以及离开期间新建的会话）会切到 `workspace-write` 预设（`approval: ask`），原预设记录下来，关闭时恢复。插件以 prepend 方式监听 `approval/request` 和 `user-questions/request`：请求进入待处理队列，推送到手机，由手机或电脑「手机」页中先作答的一方决定。审批 30 分钟无人处理即自动拒绝。关闭离开模式时，所有请求直接交回 DSH 自己的界面处理。
+开启后，当前运行的会话（以及离开期间新建的会话）会切到 `workspace-write` 预设（`approval: ask`），原预设记录下来，关闭时恢复。插件以 prepend 方式监听 `approval/request` 和 `user-questions/request`：请求进入待处理队列，推送到手机，由已配对设备或电脑「远程控制」页中先作答的一方决定。审批 30 分钟无人处理即自动拒绝。关闭离开模式时，所有请求直接交回 DSH 自己的界面处理。
 
 配置项（profile patch 的 `dsh-pair` 行）：`relayUrl`、`awayPreset`（默认 `workspace-write`）、`approvalTimeoutMinutes`（默认 30）、`notifyAfterSeconds`（运行超过这个时长才推送「已完成」，默认 20）。

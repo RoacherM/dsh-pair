@@ -93,7 +93,7 @@ export function createPhones({ ctx, state, pairing, away, push, link: getLink, l
     if (message?.type !== 'auth') return kick(peer, 'bad-auth', 'expected auth');
     if (message.mode === 'resume') {
       const device = state.deviceByKey(peer.pub);
-      if (!device) return kick(peer, 'unknown-device', '这台手机已被移除或尚未配对，请重新扫码配对');
+      if (!device) return kick(peer, 'unknown-device', '这台设备已被移除或尚未配对，请重新扫码配对');
       return ready(peer, device);
     }
     if (message.mode === 'pair') {

@@ -41,7 +41,7 @@ export function createPairing({ relayUrl, desktopId, boxKeys, desktopName, onCha
     if (!offer || offer.token !== token || Date.now() > offer.expiresAt) return Promise.resolve('invalid');
     if (request) return Promise.resolve('busy');
     return new Promise((resolve) => {
-      request = { cid, name: String(name || '手机').slice(0, 40), sas, pub, at: Date.now(), resolve };
+      request = { cid, name: String(name || '设备').slice(0, 40), sas, pub, at: Date.now(), resolve };
       onChange();
     });
   }

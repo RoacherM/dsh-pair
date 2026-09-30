@@ -14485,7 +14485,7 @@ function createPairing({ relayUrl, desktopId, boxKeys, desktopName, onChange = (
     if (!offer || offer.token !== token || Date.now() > offer.expiresAt) return Promise.resolve("invalid");
     if (request) return Promise.resolve("busy");
     return new Promise((resolve) => {
-      request = { cid, name: String(name2 || "\u624B\u673A").slice(0, 40), sas, pub, at: Date.now(), resolve };
+      request = { cid, name: String(name2 || "\u8BBE\u5907").slice(0, 40), sas, pub, at: Date.now(), resolve };
       onChange();
     });
   }
@@ -14686,7 +14686,7 @@ function createPhones({ ctx, state, pairing, away, push, link: getLink, log = ()
     if (message?.type !== "auth") return kick(peer, "bad-auth", "expected auth");
     if (message.mode === "resume") {
       const device = state.deviceByKey(peer.pub);
-      if (!device) return kick(peer, "unknown-device", "\u8FD9\u53F0\u624B\u673A\u5DF2\u88AB\u79FB\u9664\u6216\u5C1A\u672A\u914D\u5BF9\uFF0C\u8BF7\u91CD\u65B0\u626B\u7801\u914D\u5BF9");
+      if (!device) return kick(peer, "unknown-device", "\u8FD9\u53F0\u8BBE\u5907\u5DF2\u88AB\u79FB\u9664\u6216\u5C1A\u672A\u914D\u5BF9\uFF0C\u8BF7\u91CD\u65B0\u626B\u7801\u914D\u5BF9");
       return ready(peer, device);
     }
     if (message.mode === "pair") {
@@ -15127,7 +15127,7 @@ function registerRoutes(ctx, { ready, changes }) {
     ["POST", "/api/pair/revoke", async (request) => {
       const rt = await ready;
       const { deviceId } = await body(request);
-      rt.phones.kickDevice(deviceId, "\u8FD9\u53F0\u624B\u673A\u5DF2\u5728\u7535\u8111\u4E0A\u88AB\u79FB\u9664");
+      rt.phones.kickDevice(deviceId, "\u8FD9\u53F0\u8BBE\u5907\u5DF2\u5728\u7535\u8111\u4E0A\u88AB\u79FB\u9664");
       await rt.state.removeDevice(deviceId);
       changes.bump();
       return json(await view());
@@ -15237,7 +15237,7 @@ async function createState({ dir = defaultDataDir() } = {}) {
     deviceById: (id) => data.devices.find((device) => device.id === id),
     async addDevice({ name: name2, pub }) {
       data.devices = data.devices.filter((device2) => device2.pub !== pub);
-      const device = { id: randomUUID3(), name: String(name2 || "\u624B\u673A").slice(0, 40), pub, createdAt: Date.now(), lastSeen: Date.now(), push: null };
+      const device = { id: randomUUID3(), name: String(name2 || "\u8BBE\u5907").slice(0, 40), pub, createdAt: Date.now(), lastSeen: Date.now(), push: null };
       data.devices.push(device);
       await save();
       return device;

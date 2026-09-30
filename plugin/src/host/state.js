@@ -75,7 +75,7 @@ export async function createState({ dir = defaultDataDir() } = {}) {
     async addDevice({ name, pub }) {
       // Pairing the same phone key again replaces the old record instead of duplicating it.
       data.devices = data.devices.filter((device) => device.pub !== pub);
-      const device = { id: randomUUID(), name: String(name || '手机').slice(0, 40), pub, createdAt: Date.now(), lastSeen: Date.now(), push: null };
+      const device = { id: randomUUID(), name: String(name || '设备').slice(0, 40), pub, createdAt: Date.now(), lastSeen: Date.now(), push: null };
       data.devices.push(device);
       await save();
       return device;

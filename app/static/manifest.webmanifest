@@ -1,7 +1,7 @@
 {
-  "name": "DSH 手机",
+  "name": "DSH 远程控制",
   "short_name": "DSH",
-  "description": "用手机控制 DeepSeek Harness",
+  "description": "Remote control for DeepSeek Harness",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -55,7 +55,7 @@ export function registerRoutes(ctx, { ready, changes }) {
     ['POST', '/api/pair/revoke', async (request) => {
       const rt = await ready;
       const { deviceId } = await body(request);
-      rt.phones.kickDevice(deviceId, '这台手机已在电脑上被移除');
+      rt.phones.kickDevice(deviceId, '这台设备已在电脑上被移除');
       await rt.state.removeDevice(deviceId);
       changes.bump();
       return json(await view());

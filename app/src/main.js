@@ -86,7 +86,7 @@ function defaultDeviceName() {
   if (/iPhone/.test(ua)) return 'iPhone';
   if (/iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'iPad';
   if (/Android/.test(ua)) return 'Android 手机';
-  return '手机浏览器';
+  return '浏览器';
 }
 
 // ------------------------------------------------------------------ app state --
@@ -217,8 +217,8 @@ function renderWelcome() {
   const wrap = h('main', { class: 'screen welcome' },
     h('div', { class: 'hero' },
       h('div', { class: 'logo' }, 'DSH'),
-      h('h1', {}, '用手机控制 DSH'),
-      h('p', {}, '查看会话、发消息、停止任务、审批操作，完成或需要你时收到通知。通信端到端加密。')),
+      h('h1', {}, 'DSH 远程控制'),
+      h('p', {}, '在这台设备上操作电脑里的 DSH：看会话、发消息、审批，有事时推送通知。内容端到端加密。')),
     app.view.error ? h('div', { class: 'note err' }, app.view.error) : null,
   );
   if (hash) {
@@ -232,7 +232,7 @@ function renderWelcome() {
     wrap.append(
       h('div', { class: 'card steps' },
         h('ol', {},
-          h('li', {}, '在电脑的 DSH 左侧栏打开「手机」，点「配对新手机」。'),
+          h('li', {}, '在电脑的 DSH 左侧栏打开「远程控制」，点「配对新设备」。'),
           h('li', {}, isIOS() && !standalone() ? '建议先点 Safari 的「分享 → 添加到主屏幕」，之后从主屏幕打开，才能收到通知。' : '点下面的按钮扫描电脑上的二维码。'),
           h('li', {}, '在电脑上确认两边的 6 位核对码一致。'))),
       h('button', { class: 'btn primary block', onClick: scanAndPair }, icon('scan'), '扫描二维码'),
@@ -291,7 +291,7 @@ function renderAway() {
   if (!el) return;
   const on = app.away?.on;
   fill(el, h('button', { class: `away ${on ? 'on' : ''}`, onClick: toggleAway },
-    h('span', { class: 'away-text' }, h('b', {}, on ? '离开模式已开启' : '离开模式'), h('span', {}, on ? '审批和提问会发到这台手机' : '开启后，会话需要审批时发到手机')),
+    h('span', { class: 'away-text' }, h('b', {}, on ? '离开模式已开启' : '离开模式'), h('span', {}, on ? '审批和提问会发到这台设备' : '开启后，会话需要审批时发到这台设备')),
     h('span', { class: `switch ${on ? 'on' : ''}` })));
 }
 async function toggleAway() {

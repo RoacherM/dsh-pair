@@ -1,5 +1,5 @@
 /**
- * Browser half: a "手机" entry in the left sidebar opening the pairing page — QR for a new phone,
+ * Browser half: a "远程控制" (Remote Control) entry in the left sidebar opening the pairing page — QR for a new device,
  * the 6-digit confirmation, paired devices, away mode and the pending approvals queue.
  */
 import React from 'react';
@@ -84,7 +84,7 @@ function PairCard({ data, act, busy }) {
   if (request) {
     return (
       <div className="px-card px-confirm">
-        <div className="px-confirm-head"><PhoneIcon size={22} /><div><b>「{request.name}」请求配对</b><span>确认手机上显示的核对码与下面一致，再点允许。</span></div></div>
+        <div className="px-confirm-head"><PhoneIcon size={22} /><div><b>「{request.name}」请求配对</b><span>确认设备上显示的核对码与下面一致，再点允许。</span></div></div>
         <div className="px-sas">{request.sas.slice(0, 3)}<i /> {request.sas.slice(3)}</div>
         <div className="px-row-actions">
           <button type="button" className="px-btn" disabled={busy} onClick={() => act('POST', '/decide', { allow: false })}>拒绝</button>
@@ -98,10 +98,10 @@ function PairCard({ data, act, busy }) {
       <div className="px-card px-offer">
         <div className="px-qr" dangerouslySetInnerHTML={{ __html: offer.qr }} />
         <div className="px-offer-text">
-          <b>用 iPhone 相机扫描二维码</b>
+          <b>用要配对的设备扫描二维码</b>
           <ol>
             <li>第一次使用：先用 Safari 打开 <code>{new URL(data.relay.url).host}</code>，点「分享 → 添加到主屏幕」，再从主屏幕 App 里扫码，这样才能收到通知。</li>
-            <li>扫码后手机会显示 6 位核对码，这里会弹出确认。</li>
+            <li>扫码后设备上会显示 6 位核对码，这里会弹出确认。</li>
           </ol>
           <div className="px-muted">二维码只能用一次，<Countdown until={offer.expiresAt} /> 后失效。</div>
           <div className="px-row-actions">
@@ -132,7 +132,7 @@ function Pending({ items, act, busy }) {
                 <button type="button" className="px-btn sm danger" disabled={busy} onClick={() => act('POST', '/answer', { id: item.id, decision: 'reject' })}>拒绝</button>
                 <button type="button" className="px-btn sm primary" disabled={busy} onClick={() => act('POST', '/answer', { id: item.id, decision: 'allow' })}>允许一次</button>
               </div>
-            ) : <span className="px-muted">请在手机上回答</span>}
+            ) : <span className="px-muted">请在已配对的设备上回答</span>}
           </div>
         ))}
       </div>
@@ -150,7 +150,7 @@ function PairPage() {
   };
   const testPush = async (deviceId) => {
     setActionError(null);
-    try { const r = await call('POST', '/test-push', { deviceId }); if (!r.sent) setActionError(r.reason === 'no-subscription' ? '这台手机还没有开启通知（在手机 App 的设置里打开）' : `推送失败：${r.reason}`); } catch (e) { setActionError(e.message); }
+    try { const r = await call('POST', '/test-push', { deviceId }); if (!r.sent) setActionError(r.reason === 'no-subscription' ? '这台设备还没有开启通知（在手机 App 的设置里打开）' : `推送失败：${r.reason}`); } catch (e) { setActionError(e.message); }
   };
   const status = data?.relay.status;
   return (
@@ -158,8 +158,8 @@ function PairPage() {
       <div className="px-inner">
         <header className="px-head">
           <div>
-            <h1>手机</h1>
-            <p>在手机上查看会话、发消息、停止任务、审批操作，并在完成或需要你时收到通知。通信经 Cloudflare 中继转发，全程端到端加密，中继看不到内容。</p>
+            <h1>远程控制</h1>
+            <p>从手机、平板或其他电脑操作这台 DSH：看会话、发消息、审批，有事时推送通知。内容端到端加密。</p>
           </div>
           {data ? (
             <span className="px-status"><span className={`px-dot ${status === 'online' ? 'ok' : status === 'connecting' ? 'busy' : 'err'}`} />{status === 'online' ? '中继已连接' : status === 'connecting' ? '正在连接中继…' : '中继未连接'}</span>
@@ -176,12 +176,12 @@ function PairPage() {
 
             <section className="px-section">
               <div className="px-section-head">
-                <h2>已配对的手机</h2><span className="px-count">{data.devices.length}</span>
+                <h2>已配对的设备</h2><span className="px-count">{data.devices.length}</span>
                 <span className="px-grow" />
-                {!data.pairing.offer && !data.pairing.request ? <button type="button" className="px-btn primary" disabled={busy} onClick={() => act('POST', '/start')}><PhoneIcon size={15} />配对新手机</button> : null}
+                {!data.pairing.offer && !data.pairing.request ? <button type="button" className="px-btn primary" disabled={busy} onClick={() => act('POST', '/start')}><PhoneIcon size={15} />配对新设备</button> : null}
               </div>
               {data.devices.length === 0 ? (
-                <div className="px-empty"><span className="px-empty-icon"><PhoneIcon size={22} /></span><b>还没有配对的手机</b><span>点「配对新手机」，用手机扫码即可。</span></div>
+                <div className="px-empty"><span className="px-empty-icon"><PhoneIcon size={22} /></span><b>还没有配对的设备</b><span>点「配对新设备」，用手机或平板扫码，其他电脑可以打开「复制配对链接」。</span></div>
               ) : (
                 <div className="px-list">
                   {data.devices.map((d) => (
@@ -205,8 +205,8 @@ function PairPage() {
               <div className="px-section-head"><h2>离开模式</h2></div>
               <div className="px-card px-away">
                 <div className="px-item-main">
-                  <b>{data.away.on ? '离开中：审批和提问会发到手机' : '在电脑前'}</b>
-                  <span>开启后，正在运行的会话会临时切换到「{data.away.preset}」权限（写工作区外的文件或执行高风险命令前需要审批），审批和提问改由手机处理，{data.away.on ? `已切换 ${data.away.sessions} 个会话。` : '关闭后恢复原来的权限。'}未处理的审批 30 分钟后自动拒绝。</span>
+                  <b>{data.away.on ? '离开中：审批和提问会发到已配对的设备' : '在电脑前'}</b>
+                  <span>开启后，正在运行的会话会临时切换到「{data.away.preset}」权限（写工作区外的文件或执行高风险命令前需要审批），审批和提问改由已配对的设备处理，{data.away.on ? `已切换 ${data.away.sessions} 个会话。` : '关闭后恢复原来的权限。'}未处理的审批 30 分钟后自动拒绝。</span>
                 </div>
                 <Switch on={data.away.on} disabled={busy || data.devices.length === 0} onChange={(on) => act('POST', '/away', { on })} />
               </div>
@@ -221,7 +221,7 @@ function PairPage() {
 }
 
 export function apply(ctx) {
-  ctx.effect(() => ctx.locale.register(NS, { zh: { panel: '手机' }, en: { panel: 'Phone' } }), 'dsh-pair: dictionary');
+  ctx.effect(() => ctx.locale.register(NS, { zh: { panel: '远程控制' }, en: { panel: 'Remote Control' } }), 'dsh-pair: dictionary');
   const t = ctx.locale.bind(NS);
   ctx.effect(() => {
     const style = document.createElement('style');
