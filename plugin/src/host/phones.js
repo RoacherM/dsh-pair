@@ -8,6 +8,7 @@
 import { randomUUID } from 'node:crypto';
 import { desktopAccept } from '../../../shared/e2e.js';
 import { projectEvent, projectRecords, streamText } from './project.js';
+import { createUploads } from './uploads.js';
 
 const WATCH_WINDOW = { minMessages: 24, minTurns: 2 };
 const MAX_SNAPSHOT_ITEMS = 120;
@@ -53,7 +54,7 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
   function broadcast(ev, payload) { for (const peer of peers.values()) event(peer, ev, payload); }
 
   function open(cid) {
-    peers.set(cid, { cid, stage: 'hello', cipher: null, device: null, watch: null, images: new Map() });
+    peers.set(cid, { cid, stage: 'hello', cipher: null, device: null, watch: null, images: new Map(), uploads: createUploads() });
   }
 
   /** Items about to go to `peer`: remember their images, so `image.get` serves only what it was shown. */
@@ -142,20 +143,26 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
     'session.older': (peer, p) => older(peer, String(p.sessionId), Number(p.beforeSeq)),
     'session.prompt': async (peer, p) => {
       const text = String(p.text ?? '').trim();
-      if (!text) throw new Error('消息不能为空');
+      const hasImages = Array.isArray(p.uploads) && p.uploads.length > 0;
+      if (!text && !hasImages) throw new Error('消息不能为空');
+      // take() checks every upload before removing any. If DSH then refuses the prompt, the phone
+      // still has its images and uploads them again when the user retries.
+      const images = hasImages ? peer.uploads.take(p.uploads) : [];
       await ctx.sessionController.prompt({
         requestId: randomUUID(), sessionId: String(p.sessionId), mode: p.mode === 'steer' ? 'steer' : 'queue',
-        content: [{ type: 'text', text }], ...(p.timeZone ? { clientTimeZone: String(p.timeZone) } : {}),
-      }, AbortSignal.timeout(30_000));
+        content: [...(text ? [{ type: 'text', text }] : []), ...images], ...(p.timeZone ? { clientTimeZone: String(p.timeZone) } : {}),
+      }, AbortSignal.timeout(60_000));
       return { accepted: true };
     },
+    'upload.put': (peer, p) => peer.uploads.put(p),
+    'upload.drop': (peer, p) => { peer.uploads.drop(p.id); return {}; },
     'session.cancel': (peer, p) => ctx.sessionController.cancel({ sessionId: String(p.sessionId) }),
     'session.create': async (peer, p) => {
       const text = String(p.text ?? '').trim();
-      if (!text) throw new Error('第一条消息不能为空');
+      if (!text && !(Array.isArray(p.uploads) && p.uploads.length)) throw new Error('第一条消息不能为空');
       const request = p.workspaceId ? { workspaceId: String(p.workspaceId) } : p.cwd ? { cwd: String(p.cwd) } : {};
       const { sessionId } = await ctx.sessionController.create(request);
-      await methods['session.prompt'](peer, { sessionId, text, timeZone: p.timeZone });
+      await methods['session.prompt'](peer, { sessionId, text, uploads: p.uploads, timeZone: p.timeZone });
       return { sessionId };
     },
     'image.get': (peer, p) => {

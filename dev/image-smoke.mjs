@@ -40,6 +40,31 @@ try {
   await page.waitForSelector('.viewer img', { timeout: 5000 });
   await shot('img-2-viewer');
   if (state.state !== 'ok' || !state.natural[0]) process.exitCode = 1;
+
+  // Sending: pick a camera-sized photo (PHOTO), see the draft, send it with text, see it echoed.
+  if (process.env.PHOTO) {
+    await page.evaluate(() => document.querySelector('.viewer').click());
+    const input = await page.$('.attach input[type=file]');
+    await input.uploadFile(process.env.PHOTO);
+    await page.waitForSelector('.draft img', { timeout: 20000 });
+    await shot('img-3-draft');
+    await page.type('#composer', '手机发来的照片');
+    await page.click('#send');
+    await page.waitForFunction(() => {
+      const mine = [...document.querySelectorAll('.msg.user')].at(-1);
+      return mine?.innerText.includes('手机发来的照片') && mine.querySelector('.pic');
+    }, { timeout: 60000 });
+    await page.evaluate(() => [...document.querySelectorAll('.msg.user')].at(-1).querySelector('.pic').scrollIntoView({ block: 'center' }));
+    await page.waitForFunction(() => [...document.querySelectorAll('.msg.user')].at(-1).querySelector('.pic').dataset.state === 'ok', { timeout: 60000 });
+    const sent = await page.evaluate(() => ({
+      drafts: document.querySelectorAll('.draft').length,
+      natural: (({ naturalWidth: w, naturalHeight: h }) => [w, h])([...document.querySelectorAll('.msg.user')].at(-1).querySelector('.pic img')),
+    }));
+    console.log('sent', JSON.stringify(sent));
+    await page.waitForFunction(() => document.body.innerText.includes('收到：「手机发来的照片」'), { timeout: 30000 });
+    await shot('img-4-sent');
+    if (sent.drafts !== 0 || Math.max(...sent.natural) > 2048 || !sent.natural[0]) process.exitCode = 1;
+  }
 } finally {
   await browser.close();
   server.close();

@@ -6,7 +6,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply } from '../plugin/src/host/index.js';
-import { decodePairLink, newBoxKeys, phoneHandshake, unb64 } from '../shared/e2e.js';
+import { b64, decodePairLink, newBoxKeys, phoneHandshake, unb64 } from '../shared/e2e.js';
 
 const RELAY = process.env.RELAY ?? 'https://dsh-pair-relay.sir-housir.workers.dev';
 
@@ -147,6 +147,22 @@ test('pair, browse, prompt, live stream, away approval — through the real rela
 
   await rpc('session.prompt', { sessionId: 's1', text: '继续' });
   assert.equal(f.prompts[0].content[0].text, '继续');
+
+  // --- the phone sends an image with a message: chunked upload, then one prompt naming it
+  const photo = Uint8Array.from({ length: 400_000 }, (_, i) => (i * 13) % 256);
+  let up = { id: null, received: 0 };
+  do {
+    up = await rpc('upload.put', { id: up.id, offset: up.received, total: photo.length, mediaType: 'image/jpeg', name: '照片.jpg', data: b64(photo.subarray(up.received, up.received + 192 * 1024)) });
+  } while (!up.done);
+  await rpc('session.prompt', { sessionId: 's1', text: '看这张', uploads: [up.id] });
+  const sent = f.prompts.at(-1).content;
+  assert.deepEqual(sent.map((part) => part.type), ['text', 'image']);
+  assert.equal(sent[1].mediaType, 'image/jpeg');
+  assert.equal(sent[1].name, '照片.jpg');
+  assert.deepEqual(Buffer.from(sent[1].data, 'base64'), Buffer.from(photo));
+  await assert.rejects(rpc('session.prompt', { sessionId: 's1', text: '再发一次', uploads: [up.id] }), /过期/);
+  await rpc('session.prompt', { sessionId: 's1', uploads: [(await rpc('upload.put', { offset: 0, total: 3, mediaType: 'image/png', data: b64(new Uint8Array([1, 2, 3])) })).id] });
+  assert.deepEqual(f.prompts.at(-1).content.map((part) => part.type), ['image'], 'an image alone is a message');
 
   // --- away mode: approval goes to the phone
   await rpc('away.set', { on: true });

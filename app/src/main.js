@@ -151,7 +151,76 @@ const ICON = {
   term: '<svg viewBox="0 0 24 24"><path d="M5 7l5 5-5 5M12 17h7"/></svg>',
   scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3M7 12h10"/></svg>',
   bell: '<svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0"/></svg>',
+  image: '<svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M20.5 16l-5-5-8.5 8.5"/></svg>',
 };
+
+// ------------------------------------------------------------------ sending images --
+// Picked images are downsized here (long edge 2048, JPEG; HEIC from the camera becomes JPEG too),
+// uploaded in chunks when the message is sent, and named in session.prompt.
+const MAX_EDGE = 2048;
+const UPLOAD_CHUNK = 192 * 1024;
+const MAX_DRAFT_IMAGES = 6;
+
+async function prepareImage(file) {
+  const small = file.size <= 1.5 * 1024 * 1024 && /^image\/(jpeg|png|webp)$/.test(file.type);
+  if (file.type === 'image/gif' && file.size <= 8 * 1024 * 1024) return file; // keep animation
+  let bitmap;
+  try { bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch { if (small) return file; throw new Error(`无法读取图片 ${file.name || ''}`); }
+  const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  if (small && scale === 1) { bitmap.close?.(); return file; }
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
+  if (!blob) throw new Error('图片压缩失败');
+  return blob;
+}
+
+async function uploadImage(blob, name, onProgress) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let id = null;
+  let offset = 0;
+  do {
+    const part = bytes.subarray(offset, offset + UPLOAD_CHUNK);
+    const r = await app.link.rpc('upload.put', { id, offset, total: bytes.length, mediaType: blob.type, name, data: b64(part) }, 60_000);
+    id = r.id;
+    offset = r.received;
+    onProgress(offset);
+  } while (offset < bytes.length);
+  return id;
+}
+
+async function addDraftImages(files) {
+  const s = app.session;
+  if (!s) return;
+  s.drafts ??= [];
+  for (const file of files) {
+    if (s.drafts.length >= MAX_DRAFT_IMAGES) { toast(`一条消息最多 ${MAX_DRAFT_IMAGES} 张图片`, 'err'); break; }
+    try {
+      const blob = await prepareImage(file);
+      s.drafts.push({ blob, url: URL.createObjectURL(blob), name: (file.name || 'image').replace(/\.\w+$/, '') + (blob.type === 'image/jpeg' ? '.jpg' : '') });
+    } catch (e) { toast(e.message, 'err'); }
+    renderDrafts();
+  }
+}
+
+function clearDrafts() {
+  for (const d of app.session?.drafts ?? []) URL.revokeObjectURL(d.url);
+  if (app.session) app.session.drafts = [];
+  renderDrafts();
+}
+
+function renderDrafts() {
+  const el = $('#drafts');
+  if (!el) return;
+  const drafts = app.session?.drafts ?? [];
+  fill(el, drafts.map((d, i) => h('div', { class: 'draft' },
+    h('img', { src: d.url, alt: '待发送的图片' }),
+    app.session.sending ? null : h('button', { class: 'draft-x', 'aria-label': '移除', onClick: () => { URL.revokeObjectURL(d.url); drafts.splice(i, 1); renderDrafts(); } }, icon('x')))));
+}
 const icon = (name) => h('span', { class: 'ico', html: ICON[name] });
 
 // ------------------------------------------------------------------ storage ----
@@ -506,7 +575,12 @@ function renderSession() {
     h('div', { id: 'pending', class: 'pending-inline' }),
     h('footer', { class: 'composer' },
       h('div', { class: 'mode', id: 'mode' }),
-      h('div', { class: 'composer-row' }, input, h('button', { class: 'send', 'aria-label': '发送', onClick: sendMessage }, icon('send')))));
+      h('div', { class: 'drafts', id: 'drafts' }),
+      h('div', { class: 'composer-row' },
+        h('label', { class: 'attach', 'aria-label': '添加图片' }, icon('image'),
+          h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onChange: (e) => { addDraftImages([...e.target.files]); e.target.value = ''; } })),
+        input,
+        h('button', { class: 'send', id: 'send', 'aria-label': '发送', onClick: sendMessage }, icon('send')))));
 }
 
 function renderSessionChrome() {
@@ -623,13 +697,35 @@ async function sendMessage() {
   const input = $('#composer');
   const text = input.value.trim();
   const s = app.session;
-  if (!text || !s) return;
+  const drafts = s?.drafts ?? [];
+  if (!s || s.sending || (!text && !drafts.length)) return;
+  const send = $('#send');
+  s.sending = true;
+  renderDrafts();
+  if (send) send.disabled = true;
   input.value = ''; input.style.height = 'auto';
   vibrate();
   try {
-    await app.link.rpc('session.prompt', { sessionId: s.id, text, mode: s.running ? app.sendMode : 'queue', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+    // Uploaded on every attempt: the desktop keeps an upload only until the prompt that names it.
+    const uploads = [];
+    const total = drafts.reduce((n, d) => n + d.blob.size, 0);
+    let before = 0;
+    for (const d of drafts) {
+      uploads.push(await uploadImage(d.blob, d.name, (sent) => { if (send) send.dataset.progress = `${Math.round(((before + sent) / total) * 100)}%`; }));
+      before += d.blob.size;
+    }
+    await app.link.rpc('session.prompt', { sessionId: s.id, text, uploads, mode: s.running ? app.sendMode : 'queue', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, 90_000);
+    s.sending = false;
+    clearDrafts();
     s.running = true; renderSessionChrome(); renderLive(); scrollBottom();
-  } catch (e) { input.value = text; toast(e.message, 'err'); }
+  } catch (e) {
+    s.sending = false;
+    input.value = text;
+    renderDrafts();
+    toast(e.message, 'err');
+  } finally {
+    if (send) { send.disabled = false; delete send.dataset.progress; }
+  }
 }
 
 async function stopSession() {

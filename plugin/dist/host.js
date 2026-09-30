@@ -14603,7 +14603,7 @@ function createPairing({ relayUrl, desktopId, boxKeys, desktopName, onChange = (
 }
 
 // src/host/phones.js
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/host/project.js
 var MAX_TEXT = 2e4;
@@ -14682,6 +14682,68 @@ function streamText(stream = []) {
   return text;
 }
 
+// src/host/uploads.js
+import { randomUUID as randomUUID2 } from "node:crypto";
+var MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+var MAX_PENDING_BYTES = 24 * 1024 * 1024;
+var MAX_IMAGES_PER_MESSAGE = 6;
+var UPLOAD_TTL_MS = 10 * 60 * 1e3;
+var MEDIA_TYPES = /* @__PURE__ */ new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+function createUploads({ now = () => Date.now() } = {}) {
+  const uploads = /* @__PURE__ */ new Map();
+  const pendingBytes = () => [...uploads.values()].reduce((n, u) => n + u.total, 0);
+  function expire() {
+    for (const [id, upload] of uploads) if (now() - upload.touched > UPLOAD_TTL_MS) uploads.delete(id);
+  }
+  function put(p = {}) {
+    expire();
+    const data = unb64(String(p.data ?? ""));
+    let id = p.id ? String(p.id) : null;
+    let upload = id ? uploads.get(id) : void 0;
+    if (!upload) {
+      if (id) throw new Error("\u4E0A\u4F20\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u56FE\u7247");
+      const mediaType = String(p.mediaType ?? "");
+      const total = Number(p.total);
+      if (!MEDIA_TYPES.has(mediaType)) throw new Error(`\u4E0D\u652F\u6301\u7684\u56FE\u7247\u683C\u5F0F ${mediaType || "\uFF08\u672A\u77E5\uFF09"}`);
+      if (!Number.isSafeInteger(total) || total <= 0) throw new Error("\u56FE\u7247\u5927\u5C0F\u65E0\u6548");
+      if (total > MAX_UPLOAD_BYTES) throw new Error(`\u56FE\u7247\u592A\u5927\uFF08${Math.round(total / 1024 / 1024)} MB\uFF09\uFF0C\u4E0A\u9650 ${MAX_UPLOAD_BYTES / 1024 / 1024} MB`);
+      if (pendingBytes() + total > MAX_PENDING_BYTES) throw new Error("\u5F85\u53D1\u9001\u7684\u56FE\u7247\u592A\u591A\uFF0C\u8BF7\u5148\u53D1\u9001\u6216\u79FB\u9664\u4E00\u4E9B");
+      id = randomUUID2();
+      upload = { mediaType, name: p.name ? String(p.name).slice(0, 120) : void 0, total, parts: [], received: 0, touched: now() };
+      uploads.set(id, upload);
+    }
+    if (Number(p.offset ?? 0) !== upload.received) throw new Error(`\u4E0A\u4F20\u987A\u5E8F\u9519\u8BEF\uFF1A\u671F\u671B\u504F\u79FB ${upload.received}`);
+    if (upload.received + data.length > upload.total) {
+      uploads.delete(id);
+      throw new Error("\u4E0A\u4F20\u7684\u6570\u636E\u8D85\u8FC7\u58F0\u660E\u7684\u5927\u5C0F");
+    }
+    upload.parts.push(data);
+    upload.received += data.length;
+    upload.touched = now();
+    return { id, received: upload.received, done: upload.received === upload.total };
+  }
+  function take(ids = []) {
+    expire();
+    const list = [...new Set((Array.isArray(ids) ? ids : []).map(String))];
+    if (list.length > MAX_IMAGES_PER_MESSAGE) throw new Error(`\u4E00\u6761\u6D88\u606F\u6700\u591A ${MAX_IMAGES_PER_MESSAGE} \u5F20\u56FE\u7247`);
+    const found = list.map((id) => {
+      const upload = uploads.get(id);
+      if (!upload) throw new Error("\u6709\u56FE\u7247\u4E0A\u4F20\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9");
+      if (upload.received !== upload.total) throw new Error("\u6709\u56FE\u7247\u8FD8\u6CA1\u4E0A\u4F20\u5B8C");
+      return [id, upload];
+    });
+    return found.map(([id, upload]) => {
+      uploads.delete(id);
+      const bytes = Buffer.concat(upload.parts);
+      return { type: "image", mediaType: upload.mediaType, data: bytes.toString("base64"), ...upload.name ? { name: upload.name } : {} };
+    });
+  }
+  function drop(id) {
+    uploads.delete(String(id));
+  }
+  return { put, take, drop, size: () => uploads.size };
+}
+
 // src/host/phones.js
 var WATCH_WINDOW = { minMessages: 24, minTurns: 2 };
 var MAX_SNAPSHOT_ITEMS = 120;
@@ -14734,7 +14796,7 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
     for (const peer of peers.values()) event(peer, ev, payload);
   }
   function open(cid) {
-    peers.set(cid, { cid, stage: "hello", cipher: null, device: null, watch: null, images: /* @__PURE__ */ new Map() });
+    peers.set(cid, { cid, stage: "hello", cipher: null, device: null, watch: null, images: /* @__PURE__ */ new Map(), uploads: createUploads() });
   }
   function share(peer, items) {
     for (const item of items) {
@@ -14829,23 +14891,30 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
     "session.older": (peer, p) => older(peer, String(p.sessionId), Number(p.beforeSeq)),
     "session.prompt": async (peer, p) => {
       const text = String(p.text ?? "").trim();
-      if (!text) throw new Error("\u6D88\u606F\u4E0D\u80FD\u4E3A\u7A7A");
+      const hasImages = Array.isArray(p.uploads) && p.uploads.length > 0;
+      if (!text && !hasImages) throw new Error("\u6D88\u606F\u4E0D\u80FD\u4E3A\u7A7A");
+      const images2 = hasImages ? peer.uploads.take(p.uploads) : [];
       await ctx.sessionController.prompt({
-        requestId: randomUUID2(),
+        requestId: randomUUID3(),
         sessionId: String(p.sessionId),
         mode: p.mode === "steer" ? "steer" : "queue",
-        content: [{ type: "text", text }],
+        content: [...text ? [{ type: "text", text }] : [], ...images2],
         ...p.timeZone ? { clientTimeZone: String(p.timeZone) } : {}
-      }, AbortSignal.timeout(3e4));
+      }, AbortSignal.timeout(6e4));
       return { accepted: true };
+    },
+    "upload.put": (peer, p) => peer.uploads.put(p),
+    "upload.drop": (peer, p) => {
+      peer.uploads.drop(p.id);
+      return {};
     },
     "session.cancel": (peer, p) => ctx.sessionController.cancel({ sessionId: String(p.sessionId) }),
     "session.create": async (peer, p) => {
       const text = String(p.text ?? "").trim();
-      if (!text) throw new Error("\u7B2C\u4E00\u6761\u6D88\u606F\u4E0D\u80FD\u4E3A\u7A7A");
+      if (!text && !(Array.isArray(p.uploads) && p.uploads.length)) throw new Error("\u7B2C\u4E00\u6761\u6D88\u606F\u4E0D\u80FD\u4E3A\u7A7A");
       const request = p.workspaceId ? { workspaceId: String(p.workspaceId) } : p.cwd ? { cwd: String(p.cwd) } : {};
       const { sessionId } = await ctx.sessionController.create(request);
-      await methods["session.prompt"](peer, { sessionId, text, timeZone: p.timeZone });
+      await methods["session.prompt"](peer, { sessionId, text, uploads: p.uploads, timeZone: p.timeZone });
       return { sessionId };
     },
     "image.get": (peer, p) => {
@@ -15275,7 +15344,7 @@ function registerRoutes(ctx, { ready, changes }) {
 // src/host/state.js
 var import_web_push2 = __toESM(require_src2(), 1);
 import { execFileSync } from "node:child_process";
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
@@ -15344,7 +15413,7 @@ async function createState({ dir = defaultDataDir() } = {}) {
     deviceById: (id) => data.devices.find((device) => device.id === id),
     async addDevice({ name: name2, pub }) {
       data.devices = data.devices.filter((device2) => device2.pub !== pub);
-      const device = { id: randomUUID3(), name: String(name2 || "\u8BBE\u5907").slice(0, 40), pub, createdAt: Date.now(), lastSeen: Date.now(), push: null };
+      const device = { id: randomUUID4(), name: String(name2 || "\u8BBE\u5907").slice(0, 40), pub, createdAt: Date.now(), lastSeen: Date.now(), push: null };
       data.devices.push(device);
       await save();
       return device;

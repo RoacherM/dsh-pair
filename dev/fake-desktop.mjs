@@ -18,6 +18,8 @@ const records = [
   { type: 'event', event: { type: 'assistant/message', seq: 4, time: Date.now() - 580000, data: { message: { content: [{ type: 'text', text: '找到了：第 3 行循环条件写成了 `i < lines.length - 1`，所以**最后一行被跳过**。\n\n```ts\nfor (let i = 0; i < lines.length; i++) {\n```\n\n要我直接修改并跑测试吗？' }] } } } },
   { type: 'event', event: { type: 'turn/end', seq: 5, time: Date.now() - 579000, data: { reason: { kind: 'completed' } } } },
 ];
+// Attachment bytes by id: the screenshot below and images the phone sends.
+const stored = new Map();
 // A screenshot tool result with an image, as DSH records it (FAKE_IMAGE: any PNG/JPEG on this Mac).
 if (process.env.FAKE_IMAGE) {
   const image = await readFile(process.env.FAKE_IMAGE);
@@ -29,8 +31,21 @@ if (process.env.FAKE_IMAGE) {
     { type: 'event', event: { type: 'tool/call', seq: 6, time: Date.now() - 500000, data: { callId: 'c6', name: 'computer_screenshot', arguments: '{"computer_id":"omarchy-local"}' } } },
     { type: 'event', event: { type: 'tool/result', seq: 7, time: Date.now() - 499000, data: { callId: 'c6', message: { content: [{ type: 'text', text: `Screenshot of omarchy-local: ${width}×${height}` }, { type: 'image', attachment: shot }] } } } },
   );
-  globalThis.fakeAttachments = { async readImageRequest(ref, target) { return { data: image, mediaType: shot.mediaType, width: target.width, height: target.height }; } };
+  stored.set(shot.attachmentId, { data: image, mediaType: shot.mediaType });
 }
+// Images the phone sends are stored like DSH's prompt admission does, so the echoed message shows them.
+globalThis.fakeAttachments = {
+  async readImageRequest(ref, target) { const s = stored.get(ref.attachmentId); return { data: s.data, mediaType: s.mediaType, width: target.width, height: target.height }; },
+};
+const admit = (content) => content.map((part) => {
+  if (part.type !== 'image') return part;
+  const data = Buffer.from(part.data, 'base64');
+  const png = data[0] === 0x89;
+  const attachmentId = `att-upload-${stored.size + 1}`;
+  stored.set(attachmentId, { data, mediaType: part.mediaType });
+  console.log('received image', part.mediaType, data.length, 'bytes', part.name ?? '');
+  return { type: 'image', attachment: { attachmentId, mediaType: part.mediaType, bytes: data.length, width: png ? data.readUInt32BE(16) : 1200, height: png ? data.readUInt32BE(20) : 900, name: part.name } };
+});
 const sessions = [
   { sessionId: 's1', title: '修复 parser 漏行', cwd: '/Users/me/proj', running: false, updatedAt: Date.now() - 579000 },
   { sessionId: 's2', title: '写周报', cwd: '/Users/me/notes', running: false, updatedAt: Date.now() - 86400000 },
@@ -59,7 +74,8 @@ const ctx = {
     },
     async prompt(req) {
       const add = (event) => { event.seq = ++seq; event.time = Date.now(); records.push({ type: 'event', event }); push({ type: 'event', event }); };
-      add({ type: 'user/message', data: { content: req.content, source: { kind: 'user' } } });
+      add({ type: 'user/message', data: { content: admit(req.content), source: { kind: 'user' } } });
+      const said = req.content.find((part) => part.type === 'text')?.text ?? '（一张图片）';
       const s = sessions[0]; s.running = true; s.updatedAt = Date.now(); emit('api-session/status', 's1', true);
       setTimeout(async () => {
         const callId = `c${seq + 1}`;
@@ -67,7 +83,7 @@ const ctx = {
         // ask for approval (only intercepted in away mode)
         const verdict = await waterfall('approval/request', { agent: { session }, toolName: 'bash', reason: 'npm test' }, () => Promise.resolve('allowed-once'));
         add({ type: 'tool/result', data: { callId, message: { content: [{ type: 'text', text: verdict === 'allowed-once' ? '✓ 42 tests passed' : `denied (${verdict})` }] }, ...(verdict === 'allowed-once' ? {} : { error: 'denied' }) } });
-        const reply = `收到：「${req.content[0].text}」。测试${verdict === 'allowed-once' ? '全部通过 ✅' : '被拒绝执行'}。\n\n- 修复了循环边界\n- 增加了一条回归测试`;
+        const reply = `收到：「${said}」。测试${verdict === 'allowed-once' ? '全部通过 ✅' : '被拒绝执行'}。\n\n- 修复了循环边界\n- 增加了一条回归测试`;
         push({ type: 'assistant-stream', frame: { type: 'start', attemptId: 'a' + seq, revision: 1, turn: 1, step: 1 } });
         const attempt = 'a' + seq;
         for (const ch of reply) { push({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: attempt, revision: 1, index: 0, time: Date.now(), chunk: { type: 'text-delta', index: 0, text: ch } } }); await new Promise((r) => setTimeout(r, 25)); }
