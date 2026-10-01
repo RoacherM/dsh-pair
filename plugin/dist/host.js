@@ -14699,6 +14699,12 @@ function statsOf(values = {}) {
     context: used !== void 0 && p?.contextWindow ? Math.min(100, Math.round(used / p.contextWindow * 100)) : null
   };
 }
+function tokensOf(values = {}) {
+  const u = values.tokenUsage;
+  if (!u) return null;
+  const total = (u.uncachedInputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0) + (u.outputTokens ?? 0);
+  return total > 0 ? total : null;
+}
 function queueOf(inbox) {
   const items = [];
   for (const [target, list] of [["next-turn", inbox?.["next-turn"]], ["next-step", inbox?.["next-step"]]]) {
@@ -15068,6 +15074,7 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
       preset: values.permissions?.currentValue ?? null,
       model: values.modelSelection?.next ?? null,
       stats: statsOf(values),
+      tokens: tokensOf(values),
       queue: queueOf(values.inbox)
     };
   }
@@ -15087,7 +15094,7 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
       try {
         const baseline = await ctx.sessionController.projections({ sessionId: w.sessionId }, AbortSignal.timeout(1e4));
         const values = baseline?.values ?? {};
-        if (peer.watch === w) event(peer, "stats", { sessionId: w.sessionId, stats: statsOf(values), queue: queueOf(values.inbox) });
+        if (peer.watch === w) event(peer, "stats", { sessionId: w.sessionId, stats: statsOf(values), tokens: tokensOf(values), queue: queueOf(values.inbox) });
       } catch {
       }
     }, STATS_DELAY_MS);

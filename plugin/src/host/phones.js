@@ -7,7 +7,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { desktopAccept } from '../../../shared/e2e.js';
-import { projectEvent, projectRecords, queueOf, statsOf, streamText } from './project.js';
+import { projectEvent, projectRecords, queueOf, statsOf, streamText, tokensOf } from './project.js';
 import { createUploads } from './uploads.js';
 
 const WATCH_WINDOW = { minMessages: 24, minTurns: 2 };
@@ -270,7 +270,7 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
       hasMore: snapshot.hasMore ?? false, firstSeq: snapshot.records?.[0]?.event?.seq ?? null,
       live: w.live, todos: values.todos ?? null, preset: values.permissions?.currentValue ?? null,
       model: values.modelSelection?.next ?? null,
-      stats: statsOf(values), queue: queueOf(values.inbox),
+      stats: statsOf(values), tokens: tokensOf(values), queue: queueOf(values.inbox),
     };
   }
 
@@ -293,7 +293,7 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
       try {
         const baseline = await ctx.sessionController.projections({ sessionId: w.sessionId }, AbortSignal.timeout(10_000));
         const values = baseline?.values ?? {};
-        if (peer.watch === w) event(peer, 'stats', { sessionId: w.sessionId, stats: statsOf(values), queue: queueOf(values.inbox) });
+        if (peer.watch === w) event(peer, 'stats', { sessionId: w.sessionId, stats: statsOf(values), tokens: tokensOf(values), queue: queueOf(values.inbox) });
       } catch {}
     }, STATS_DELAY_MS);
   }

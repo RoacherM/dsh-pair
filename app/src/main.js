@@ -5,6 +5,7 @@
  */
 import { marked } from 'marked';
 import { b64, boxKeysFromSecret, decodePairLink, newBoxKeys, unb64 } from '../../shared/e2e.js';
+import { formatTokens } from './format.js';
 import { Link } from './link.js';
 import { scanQr } from './scan.js';
 
@@ -334,7 +335,7 @@ function onEvent(msg) {
       break;
     }
     case 'stats':
-      if (app.session?.id === msg.sessionId) { app.session.stats = msg.stats; app.session.queue = msg.queue ?? []; renderStats(); renderQueue(); }
+      if (app.session?.id === msg.sessionId) { app.session.stats = msg.stats; app.session.tokens = msg.tokens ?? null; app.session.queue = msg.queue ?? []; renderStats(); renderQueue(); }
       break;
     case 'model':
       if (app.session?.id === msg.sessionId) { app.session.model = msg.model; renderSessionChrome(); }
@@ -560,7 +561,7 @@ async function openSession(id, { silent = false } = {}) {
   try {
     const r = await app.link.rpc('session.watch', { sessionId: id });
     if (app.session?.id !== id) return;
-    Object.assign(app.session, { title: r.title ?? app.session.title, cwd: r.cwd, model: r.model ?? null, stats: r.stats ?? null, queue: r.queue ?? [], hasMore: r.hasMore, firstSeq: r.firstSeq, live: r.live, loading: false, items: [], tools: new Map() });
+    Object.assign(app.session, { title: r.title ?? app.session.title, cwd: r.cwd, model: r.model ?? null, stats: r.stats ?? null, tokens: r.tokens ?? null, queue: r.queue ?? [], hasMore: r.hasMore, firstSeq: r.firstSeq, live: r.live, loading: false, items: [], tools: new Map() });
     loadModels();
     $('#log') && fill($('#log'));
     for (const item of r.items) addItem(item, false);
@@ -639,13 +640,14 @@ function renderSessionChrome() {
 }
 
 // ---- stats and queue (as in DSH's composer)
-/** "12 轮 48 步 · 缓存 93% · 上下文 41% · 52 tok/s" — only the numbers DSH has. */
+/** "12 轮 48 步 · 已用 1.2M · 缓存 93% · 上下文 41% · 52 tok/s" — only the numbers DSH has. */
 function renderStats() {
   const el = $('#stats');
   const st = app.session?.stats;
   if (!el) return;
   const parts = [];
   if (st?.turns) parts.push(`${st.turns} 轮 ${st.steps ?? 0} 步`);
+  if (app.session?.tokens) parts.push(`已用 ${formatTokens(app.session.tokens)}`);
   if (st?.cacheHit !== null && st?.cacheHit !== undefined) parts.push(`缓存 ${st.cacheHit}%`);
   if (st?.context !== null && st?.context !== undefined) parts.push(h('span', { class: st.context >= 80 ? 'warn' : '' }, `上下文 ${st.context}%`));
   if (st?.tps) parts.push(`${st.tps} tok/s`);

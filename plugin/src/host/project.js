@@ -121,6 +121,17 @@ export function statsOf(values = {}) {
 }
 
 /**
+ * Tokens the session has used so far, as DSH's usage pill counts them: billed prompt input
+ * (uncached + cache reads + cache writes) plus output. Null before the first request.
+ */
+export function tokensOf(values = {}) {
+  const u = values.tokenUsage;
+  if (!u) return null;
+  const total = (u.uncachedInputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0) + (u.outputTokens ?? 0);
+  return total > 0 ? total : null;
+}
+
+/**
  * Messages waiting in the session's inbox (the `inbox` projection): `next-turn` ones are queued and
  * can be steered in; `next-step` ones are already steering into the running turn.
  */
