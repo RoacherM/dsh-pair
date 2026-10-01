@@ -659,10 +659,11 @@ function openSessionMenu() {
 }
 
 async function loadModels() {
-  if (app.models || app.modelsFailed || app.modelsLoading) return;
+  // An older desktop plugin has no model picker; ask again a minute later (DSH may have restarted).
+  if (app.models || app.modelsLoading || (app.modelsFailed && Date.now() - app.modelsFailed < 60_000)) return;
   app.modelsLoading = true;
-  try { app.models = await app.link.rpc('models.list'); }
-  catch { app.modelsFailed = true; } // an older desktop plugin has no model picker
+  try { app.models = await app.link.rpc('models.list'); app.modelsFailed = 0; }
+  catch { app.modelsFailed = Date.now(); }
   finally { app.modelsLoading = false; renderSessionChrome(); }
 }
 
