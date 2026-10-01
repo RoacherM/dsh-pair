@@ -524,7 +524,9 @@ function renderHomeList() {
 // ---- new session
 function renderNew() {
   const spaces = app.workspaces.length ? app.workspaces : [...new Set(app.sessions.map((s) => s.cwd).filter(Boolean))].map((p) => ({ path: p, title: base(p) }));
-  const select = h('select', { class: 'input', id: 'ws' }, ...spaces.map((w, i) => h('option', { value: i }, w.title || base(w.path))));
+  const pre = Math.max(0, spaces.findIndex((w) => app.view.cwd && w.path === app.view.cwd));
+  const select = h('select', { class: 'input', id: 'ws' }, ...spaces.map((w, i) => h('option', { value: i, selected: i === pre }, w.title || base(w.path))));
+  const back = () => { if (app.view.from) openSession(app.view.from); else { app.view = { name: 'home' }; render(); } };
   const text = h('textarea', { class: 'input', rows: 6, placeholder: '要让 Agent 做什么？' });
   const go = async (btn) => {
     const w = spaces[Number(select.value)];
@@ -538,7 +540,7 @@ function renderNew() {
   };
   const btn = h('button', { class: 'btn primary block', onClick: () => go(btn) }, '开始');
   return h('main', { class: 'screen form' },
-    h('header', { class: 'bar' }, h('button', { class: 'icon-btn', onClick: () => { app.view = { name: 'home' }; render(); } }, icon('back')), h('div', { class: 'bar-title' }, h('b', {}, '新会话'))),
+    h('header', { class: 'bar' }, h('button', { class: 'icon-btn', onClick: back }, icon('back')), h('div', { class: 'bar-title' }, h('b', {}, '新会话'))),
     h('label', { class: 'field' }, h('span', {}, '工作区'), select),
     h('label', { class: 'field' }, h('span', {}, '第一条消息'), text),
     btn);
@@ -655,12 +657,20 @@ function openSessionMenu() {
   const item = (ico, label, fn, cls = '') => h('button', { class: `pop-item ${cls}`, onClick: () => { close(); fn(); } }, icon(ico), h('span', {}, label));
   const bg = h('div', { class: 'pop-bg', onClick: (e) => { if (e.target === bg) close(); } },
     h('div', { class: 'popover' },
-      s.running ? item('stop', '停止运行', stopSession, 'danger') : null,
-      s.lastReply ? item('copy', '复制最后回复', () => copyText(s.lastReply)) : null,
+      item('plus', '新会话', () => newSessionFrom(s)),
       item('refresh', '刷新', () => openSession(s.id, { silent: true })),
-      h('div', { class: 'pop-sep' }),
-      item('gear', '设置', () => { app.view = { name: 'settings' }; render(); })));
+      s.running ? h('div', { class: 'pop-sep' }) : null,
+      s.running ? item('stop', '停止运行', stopSession, 'danger') : null));
   document.body.append(bg);
+}
+
+/** New session in the same workspace as `s`; Back returns to `s`. */
+function newSessionFrom(s) {
+  app.link?.rpc('session.unwatch').catch(() => {});
+  clearDrafts();
+  app.session = null;
+  app.view = { name: 'new', from: s.id, cwd: s.cwd };
+  render();
 }
 
 /** "Claude Opus 5.5 · Claude Code" → "Opus 5.5": the pill shows the model, not its route. */

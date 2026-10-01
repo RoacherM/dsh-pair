@@ -57,7 +57,14 @@ try {
   await page.click('.sbar .round-btn:last-child');
   await page.waitForSelector('.popover .pop-item');
   await shot('ui-3-menu');
-  await page.evaluate(() => document.querySelector('.pop-bg').click());
+  check((await page.$$eval('.pop-item', (n) => n.map((e) => e.innerText.trim()))).join('|') === '新会话|刷新', 'menu has only New session and Refresh');
+  await page.evaluate(() => document.querySelector('.pop-item').click());
+  await page.waitForSelector('#ws');
+  check((await page.$eval('#ws', (el) => el.selectedOptions[0].innerText)) === 'proj', 'New session preselects the current workspace');
+  await shot('ui-3b-new');
+  await page.evaluate(() => document.querySelector('.bar .icon-btn').click());
+  await page.waitForSelector('.msg.assistant .msg-actions', { timeout: 15000 });
+  check(true, 'Back from New session returns to the session');
   await new Promise((r) => setTimeout(r, 300));
 
   await page.type('#composer', '好的，改吧');
