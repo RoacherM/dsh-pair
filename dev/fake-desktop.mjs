@@ -100,7 +100,7 @@ const ctx = {
       const efforts = [{ id: 'low', name: 'Low' }, { id: 'medium', name: 'Medium' }, { id: 'high', name: 'High' }];
       return { default: { provider: 'claude', model: 'claude-opus-5-5' }, groups: [
         { id: 'claude', name: 'Claude', models: [
-          { id: 'claude-opus-5-5', name: 'Opus 5.5', reasoning: { efforts, defaultEffort: 'high' } },
+          { id: 'claude-opus-5-5', name: 'Claude Opus 5.5 · Claude Code', reasoning: { efforts, defaultEffort: 'high' } },
           { id: 'claude-sonnet-5', name: 'Sonnet 5', reasoning: { efforts, defaultEffort: 'medium' } },
         ] },
         { id: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-chat', name: 'DeepSeek V4' }] },

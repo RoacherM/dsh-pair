@@ -55,9 +55,9 @@ try {
   check(true, 'picking Sonnet 5 · Medium switches the session model');
 
   await page.click('.sbar .round-btn:last-child');
-  await page.waitForSelector('.sheet-bg.show .sheet-item');
+  await page.waitForSelector('.popover .pop-item');
   await shot('ui-3-menu');
-  await page.evaluate(() => document.querySelector('.sheet-bg').click());
+  await page.evaluate(() => document.querySelector('.pop-bg').click());
   await new Promise((r) => setTimeout(r, 300));
 
   await page.type('#composer', '好的，改吧');
@@ -65,11 +65,13 @@ try {
   await page.click('#send');
   await page.waitForFunction(() => document.querySelector('#send').dataset.stop === '1', { timeout: 15000 });
   await shot('ui-4-running');
+  check(await page.$$eval('.log > .tool', (n) => n.length) === 0 && await page.$$eval('.steps', (n) => n.length) > 0, 'tool calls are folded into steps rows');
   check(!(await page.$eval('#mode', (b) => b.hidden)), 'queue/steer pill shows while running');
   await page.waitForFunction(() => document.body.innerText.includes('收到：「好的，改吧」') && !document.querySelector('.md.live'), { timeout: 30000 });
 
   await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
   await shot('ui-5-session-dark');
+  check(await page.$$eval('.msg-actions', (n) => n.filter((e) => getComputedStyle(e).display !== 'none').length) === 2, 'copy/share only under the reply that ends each turn');
   check(errors.length === 0, 'no page errors');
 } finally {
   await browser.close();

@@ -147,6 +147,7 @@ const ICON = {
   send: '<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   stop: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>',
   check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7"/></svg>',
   x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   term: '<svg viewBox="0 0 24 24"><path d="M5 7l5 5-5 5M12 17h7"/></svg>',
   scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3M7 12h10"/></svg>',
@@ -646,17 +647,24 @@ function openSheet(title, build) {
   requestAnimationFrame(() => bg.classList.add('show'));
 }
 
+/** A small menu under the "…" button, like the Claude app's. */
 function openSessionMenu() {
   const s = app.session;
   if (!s) return;
-  const lastReply = s.lastReply;
-  const item = (label, fn, cls = '') => h('button', { class: `sheet-item ${cls}`, onClick: fn }, label);
-  openSheet(s.title || '会话', (close) => h('div', { class: 'sheet-list' },
-    s.running ? item('停止运行', () => { close(); stopSession(); }, 'danger') : null,
-    lastReply ? item('复制最后一条回复', () => { close(); copyText(lastReply); }) : null,
-    item('刷新会话', () => { close(); openSession(s.id, { silent: true }); }),
-    item('设置', () => { close(); app.view = { name: 'settings' }; render(); })));
+  const close = () => bg.remove();
+  const item = (ico, label, fn, cls = '') => h('button', { class: `pop-item ${cls}`, onClick: () => { close(); fn(); } }, icon(ico), h('span', {}, label));
+  const bg = h('div', { class: 'pop-bg', onClick: (e) => { if (e.target === bg) close(); } },
+    h('div', { class: 'popover' },
+      s.running ? item('stop', '停止运行', stopSession, 'danger') : null,
+      s.lastReply ? item('copy', '复制最后回复', () => copyText(s.lastReply)) : null,
+      item('refresh', '刷新', () => openSession(s.id, { silent: true })),
+      h('div', { class: 'pop-sep' }),
+      item('gear', '设置', () => { app.view = { name: 'settings' }; render(); })));
+  document.body.append(bg);
 }
+
+/** "Claude Opus 5.5 · Claude Code" → "Opus 5.5": the pill shows the model, not its route. */
+const shortModelName = (name) => String(name).split(' · ')[0].replace(/^Claude\s+/, '');
 
 async function loadModels() {
   // An older desktop plugin has no model picker; ask again a minute later (DSH may have restarted).
@@ -674,7 +682,7 @@ function modelLabel(sel) {
     ?? app.models?.groups?.flatMap((g) => g.models).find((m) => m.id === sel.model);
   const effortId = sel.reasoningEffort ?? model?.defaultEffort;
   const effort = model?.efforts?.find((e) => e.id === effortId)?.name ?? effortId ?? '';
-  return { name: model?.name ?? sel.model, effort };
+  return { name: shortModelName(model?.name ?? sel.model), effort };
 }
 
 function openModelPicker() {
@@ -696,7 +704,7 @@ function openModelPicker() {
       const curEffort = cur.reasoningEffort ?? m.defaultEffort;
       return h('div', { class: `model-row ${on ? 'on' : ''}` },
         h('button', { class: 'model-name', onClick: () => choose(close, g.id, m.id, on ? cur.reasoningEffort : undefined) },
-          h('span', {}, m.name), on ? icon('check') : null),
+          h('span', {}, shortModelName(m.name)), on ? icon('check') : null),
         m.efforts.length ? h('div', { class: 'efforts' }, m.efforts.map((e) => h('button', {
           class: `effort ${on && curEffort === e.id ? 'on' : ''}`, onClick: () => choose(close, g.id, m.id, e.id),
         }, e.name))) : null);
@@ -750,7 +758,7 @@ async function loadOlder() {
     const r = await app.link.rpc('session.older', { sessionId: s.id, beforeSeq: s.firstSeq });
     s.hasMore = r.hasMore; s.firstSeq = r.firstSeq ?? s.firstSeq;
     const frag = document.createDocumentFragment();
-    for (const item of r.items) { const node = itemNode(item); if (node) frag.append(node); }
+    for (const item of r.items) { const node = itemNode(item); if (node) appendNode(frag, node); }
     $('#log').prepend(frag);
     for (const item of r.items) if (item.k === 'result') applyResult(item);
     renderMore();
@@ -789,11 +797,38 @@ function applyResult(item) {
   if (!node) return;
   node.classList.add(item.error ? 'err' : 'done');
   $('.tool-out', node).textContent = item.preview || (item.error ? '失败' : '（无输出）');
-  // Images of the result (screenshots) show under the row, visible without opening it.
+  const group = node.closest('.steps');
+  if (group) updateSteps(group);
+  // Images of the result (screenshots) show under the steps, visible without opening them.
   if (item.pics?.length && !node.dataset.pics) {
     node.dataset.pics = '1';
-    node.after(picsNode(item.pics));
+    (group ?? node).after(picsNode(item.pics));
   }
+}
+
+/** Consecutive tool calls fold into one row: "4 个步骤 · <latest>", opened on tap. */
+function appendNode(parent, node) {
+  if (!node.classList?.contains('tool')) { parent.append(node); return; }
+  let group = parent.lastElementChild;
+  if (!group?.classList.contains('steps')) {
+    group = h('details', { class: 'steps' },
+      h('summary', {}, h('span', { class: 'tool-state' }), h('b', { class: 'steps-label' }), h('span', { class: 'tool-sum' })),
+      h('div', { class: 'steps-list' }));
+    parent.append(group);
+  }
+  $('.steps-list', group).append(node);
+  updateSteps(group);
+}
+
+function updateSteps(group) {
+  const tools = [...group.querySelectorAll('.steps-list > .tool')];
+  const last = tools.at(-1);
+  $('.steps-label', group).textContent = tools.length === 1 ? $('summary b', last).textContent : `${tools.length} 个步骤`;
+  $(':scope > summary .tool-sum', group).textContent = $('.tool-sum', last).textContent;
+  const failed = tools.some((t) => t.classList.contains('err'));
+  const running = tools.some((t) => !t.classList.contains('done') && !t.classList.contains('err'));
+  group.classList.toggle('err', failed && !running);
+  group.classList.toggle('done', !failed && !running);
 }
 
 function addItem(item, live) {
@@ -807,7 +842,7 @@ function addItem(item, live) {
   if (item.k === 'assistant' && live) { app.session.live = ''; renderLive(); }
   const near = isNearBottom();
   const node = itemNode(item);
-  if (node) log.append(node);
+  if (node) appendNode(log, node);
   if (live && near) scrollBottom();
 }
 
