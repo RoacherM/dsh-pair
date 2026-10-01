@@ -14442,6 +14442,47 @@ function createAway({ ctx, state, config, log = () => {
   };
 }
 
+// src/host/commands.js
+var DEFAULT_PHONE_COMMANDS = ["compact", "goal", "plan", "export"];
+var COMMAND_LINE = /^\/([a-z0-9_-]+)(?:\s|$)/;
+var RUN_TIMEOUT_MS = 12e4;
+function createCommands({ ctx, config = {} }) {
+  const allowed = new Set(config.phoneCommands ?? DEFAULT_PHONE_COMMANDS);
+  const registry = () => ctx.get?.("commands");
+  async function agentOf(sessionId) {
+    const lookup = ctx.get?.("typert")?.lookups?.get("agent");
+    return lookup ? lookup.resolve(sessionId) : void 0;
+  }
+  async function run(sessionId, text, hasImages) {
+    const name2 = COMMAND_LINE.exec(text)?.[1];
+    const commands = name2 && registry();
+    if (!commands) return void 0;
+    const agent = await agentOf(sessionId);
+    if (!agent || !commands.find(agent, name2)) return void 0;
+    if (!allowed.has(name2)) throw new Error(`/${name2} \u4E0D\u80FD\u4ECE\u624B\u673A\u8FD0\u884C\uFF08\u53EF\u5728\u63D2\u4EF6\u914D\u7F6E phoneCommands \u91CC\u5141\u8BB8\uFF09`);
+    if (hasImages) throw new Error(`/${name2} \u4E0D\u63A5\u53D7\u56FE\u7247\uFF0C\u8BF7\u53BB\u6389\u56FE\u7247\u518D\u53D1`);
+    const execution = await commands.execute(agent, text, [], AbortSignal.timeout(RUN_TIMEOUT_MS));
+    if (!execution) return void 0;
+    return { kind: execution.result.kind, ...execution.result.text !== void 0 ? { text: execution.result.text } : {} };
+  }
+  async function list(sessionId) {
+    const commands = registry();
+    const agent = commands ? await agentOf(sessionId) : void 0;
+    const descriptors = agent ? commands.list(agent) : [];
+    let skills = [];
+    try {
+      const catalog = await ctx.get?.("sessionSkillCatalog")?.list({ sessionId }, AbortSignal.timeout(1e4));
+      skills = catalog?.skills ?? [];
+    } catch {
+    }
+    return {
+      commands: descriptors.filter((c) => allowed.has(c.name)).map((c) => ({ name: c.name, description: c.description, hint: c.input?.hint ?? null })),
+      skills: skills.map((s) => ({ name: s.name, description: s.description ?? "" }))
+    };
+  }
+  return { run, list };
+}
+
 // src/host/images.js
 var PHONE_MAX_EDGE = 1600;
 var PHONE_MAX_BYTES = 600 * 1024;
@@ -14663,6 +14704,10 @@ function projectEvent(event) {
     }
     case "turn/end":
       return { k: "end", seq, time, reason: data?.reason?.kind ?? "completed" };
+    case "command/run":
+      return { k: "command", seq, time, commandId: data?.commandId, name: data?.name ?? "", args: clip(String(data?.args ?? "").trim(), 400) };
+    case "command/done":
+      return { k: "command-done", seq, commandId: data?.commandId, error: data?.kind === "error", text: clip(data?.text ?? "", 2e3) };
     default:
       return null;
   }
@@ -14791,7 +14836,7 @@ var LIVE_THROTTLE_MS = 120;
 var MAX_KNOWN_IMAGES = 400;
 var STATS_DELAY_MS = 300;
 var STATS_EVENTS = /* @__PURE__ */ new Set(["turn/end", "step/end", "assistant/message", "request/context", "agent/inbox/spliced", "compaction/end", "user/message"]);
-function createPhones({ ctx, state, pairing, away, push, images, link: getLink, log = () => {
+function createPhones({ ctx, state, pairing, away, push, images, commands, link: getLink, log = () => {
 }, onChange = () => {
 } }) {
   const peers = /* @__PURE__ */ new Map();
@@ -14963,6 +15008,8 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
       const text = String(p.text ?? "").trim();
       const hasImages = Array.isArray(p.uploads) && p.uploads.length > 0;
       if (!text && !hasImages) throw new Error("\u6D88\u606F\u4E0D\u80FD\u4E3A\u7A7A");
+      const command = await commands.run(String(p.sessionId), text, hasImages);
+      if (command) return { command };
       const images2 = hasImages ? peer.uploads.take(p.uploads) : [];
       await ctx.sessionController.prompt({
         requestId: randomUUID3(),
@@ -14995,9 +15042,10 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
       if (!text && !(Array.isArray(p.uploads) && p.uploads.length)) throw new Error("\u7B2C\u4E00\u6761\u6D88\u606F\u4E0D\u80FD\u4E3A\u7A7A");
       const request = p.workspaceId ? { workspaceId: String(p.workspaceId) } : p.cwd ? { cwd: String(p.cwd) } : {};
       const { sessionId } = await ctx.sessionController.create(request);
-      await methods["session.prompt"](peer, { sessionId, text, uploads: p.uploads, timeZone: p.timeZone });
-      return { sessionId };
+      const { command } = await methods["session.prompt"](peer, { sessionId, text, uploads: p.uploads, timeZone: p.timeZone });
+      return { sessionId, ...command ? { command } : {} };
     },
+    "commands.list": (peer, p) => commands.list(String(p.sessionId)),
     "image.get": (peer, p) => {
       const ref = peer.images.get(String(p.id ?? ""));
       if (!ref) throw new Error("\u8FD9\u5F20\u56FE\u7247\u4E0D\u5728\u5DF2\u6253\u5F00\u7684\u4F1A\u8BDD\u91CC");
@@ -15585,7 +15633,8 @@ function apply(ctx, config = {}) {
       notify: (payload) => push.notify(payload)
     });
     const images = createImages({ attachments: () => ctx.get?.("attachments") });
-    phones = createPhones({ ctx, state, pairing, away, push, images, link: () => link, log, onChange: () => changes.bump() });
+    const commands = createCommands({ ctx, config });
+    phones = createPhones({ ctx, state, pairing, away, push, images, commands, link: () => link, log, onChange: () => changes.bump() });
     link = createRelayLink({
       relayUrl,
       desktopId,

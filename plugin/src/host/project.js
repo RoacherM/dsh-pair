@@ -8,6 +8,8 @@
  *   { k:'tool', seq, time, callId, name, summary }
  *   { k:'result', seq, callId, error, preview, pics? } (merged into its tool row by the phone)
  *   { k:'end', seq, time, reason }                    (a turn ended; reason ≠ completed is shown)
+ *   { k:'command', seq, time, commandId, name, args } (a slash command ran)
+ *   { k:'command-done', seq, commandId, error, text } (merged into its command row by the phone)
  *
  * `pics` are [{id, w, h}]: the phone fetches the bytes with `image.get`. Items leave here with a
  * non-enumerable `refs` (the full attachment references), which phones.js keeps on the desktop.
@@ -73,6 +75,10 @@ export function projectEvent(event) {
     }
     case 'turn/end':
       return { k: 'end', seq, time, reason: data?.reason?.kind ?? 'completed' };
+    case 'command/run':
+      return { k: 'command', seq, time, commandId: data?.commandId, name: data?.name ?? '', args: clip(String(data?.args ?? '').trim(), 400) };
+    case 'command/done':
+      return { k: 'command-done', seq, commandId: data?.commandId, error: data?.kind === 'error', text: clip(data?.text ?? '', 2000) };
     default:
       return null;
   }

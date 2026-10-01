@@ -18,7 +18,7 @@ const STATS_DELAY_MS = 300;
 // Events after which the session's numbers or its queue may have changed.
 const STATS_EVENTS = new Set(['turn/end', 'step/end', 'assistant/message', 'request/context', 'agent/inbox/spliced', 'compaction/end', 'user/message']);
 
-export function createPhones({ ctx, state, pairing, away, push, images, link: getLink, log = () => {}, onChange = () => {} }) {
+export function createPhones({ ctx, state, pairing, away, push, images, commands, link: getLink, log = () => {}, onChange = () => {} }) {
   const peers = new Map(); // cid → peer
   const titles = new Map();
 
@@ -175,6 +175,8 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
       const text = String(p.text ?? '').trim();
       const hasImages = Array.isArray(p.uploads) && p.uploads.length > 0;
       if (!text && !hasImages) throw new Error('消息不能为空');
+      const command = await commands.run(String(p.sessionId), text, hasImages);
+      if (command) return { command };
       // take() checks every upload before removing any. If DSH then refuses the prompt, the phone
       // still has its images and uploads them again when the user retries.
       const images = hasImages ? peer.uploads.take(p.uploads) : [];
@@ -203,9 +205,10 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
       if (!text && !(Array.isArray(p.uploads) && p.uploads.length)) throw new Error('第一条消息不能为空');
       const request = p.workspaceId ? { workspaceId: String(p.workspaceId) } : p.cwd ? { cwd: String(p.cwd) } : {};
       const { sessionId } = await ctx.sessionController.create(request);
-      await methods['session.prompt'](peer, { sessionId, text, uploads: p.uploads, timeZone: p.timeZone });
-      return { sessionId };
+      const { command } = await methods['session.prompt'](peer, { sessionId, text, uploads: p.uploads, timeZone: p.timeZone });
+      return { sessionId, ...(command ? { command } : {}) };
     },
+    'commands.list': (peer, p) => commands.list(String(p.sessionId)),
     'image.get': (peer, p) => {
       const ref = peer.images.get(String(p.id ?? ''));
       if (!ref) throw new Error('这张图片不在已打开的会话里');
