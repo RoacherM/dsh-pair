@@ -8,11 +8,10 @@ export function formatTokens(value) {
   return `${scaled(value / 1e6)}M`;
 }
 
-const MENU_SIZE = 8;
-
 /**
- * The composer's `/` menu for `text`. While a leading `/name` is being typed: the commands, then
- * skills, whose names start with it. Once `/name ` is typed: that command's input hint, if any.
+ * The composer's `/` menu for `text`. While a leading `/name` is being typed: every command, then
+ * skill, whose name starts with it (the menu scrolls). Once `/name ` is typed: that command's input
+ * hint, if any.
  * @param menu - `commands.list` result: { commands: [{name, description, hint}], skills: [{name, description}] }.
  */
 export function slashMenu(menu, text) {
@@ -20,7 +19,7 @@ export function slashMenu(menu, text) {
   if (typing) {
     const pick = (list, kind) => (list ?? []).filter((x) => x.name.startsWith(typing[1]))
       .map((x) => ({ kind, name: x.name, description: x.description ?? '', hint: x.hint ?? null }));
-    return { items: [...pick(menu?.commands, 'command'), ...pick(menu?.skills, 'skill')].slice(0, MENU_SIZE), hint: null };
+    return { items: [...pick(menu?.commands, 'command'), ...pick(menu?.skills, 'skill')], hint: null };
   }
   const chosen = /^\/([a-z0-9_-]+) $/.exec(text);
   const command = chosen && menu?.commands?.find((c) => c.name === chosen[1]);

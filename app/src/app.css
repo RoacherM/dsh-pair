@@ -233,9 +233,11 @@ button { font: inherit; color: inherit; }
 .qact.x { width: 30px; padding: 6px; display: grid; place-items: center; color: var(--fg3); }
 
 /* "/" menu above the composer, and slash-command rows in the log */
-.slash { display: flex; flex-direction: column; margin-bottom: 6px; border-radius: 18px; background: var(--l1); box-shadow: 0 0 0 1px var(--line), 0 6px 22px rgba(0,0,0,.07); overflow: hidden; }
+/* Short enough to stay above the keyboard; the rest scrolls inside the menu, not the page. */
+.slash { display: flex; flex-direction: column; margin-bottom: 6px; border-radius: 18px; background: var(--l1); box-shadow: 0 0 0 1px var(--line), 0 6px 22px rgba(0,0,0,.07);
+  max-height: 34vh; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 .slash:empty { display: none; }
-.slash-item { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: none; background: none; text-align: left; font-size: 14px; }
+.slash-item { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: none; background: none; text-align: left; font-size: 14px; }
 .slash-item + .slash-item { border-top: 1px solid var(--line); }
 .slash-item:active { background: var(--l2); }
 .slash-item b { font: 600 13.5px ui-monospace, Menlo, monospace; flex: none; }

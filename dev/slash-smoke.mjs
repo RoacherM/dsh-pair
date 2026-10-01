@@ -33,7 +33,17 @@ await page.waitForSelector('.msg.assistant', { timeout: 15000 });
 await typeInto('/');
 await page.waitForSelector('.slash-item', { timeout: 10000 });
 const names = await page.$$eval('.slash-item b', (els) => els.map((el) => el.innerText));
-check(names.join(' ') === '/compact /goal /code-review /commit', `menu lists allowed commands then skills: ${names.join(' ')}`);
+check(names.slice(0, 4).join(' ') === '/compact /goal /code-review /commit' && names.length === 24, `menu lists allowed commands then all skills: ${names.length} items`);
+// The long list scrolls inside the menu, which stays within a third of the screen.
+const box = await page.$eval('#slash', (el) => ({ h: el.clientHeight, sh: el.scrollHeight, vh: innerHeight }));
+check(box.h <= box.vh * 0.35 && box.sh > box.h, `the menu is capped (${box.h}px of ${box.sh}px) and scrolls`);
+await page.mouse.move(195, (await page.$eval('#slash', (el) => el.getBoundingClientRect().top + 60)));
+await page.mouse.wheel({ deltaY: 2000 });
+await new Promise((r) => setTimeout(r, 400));
+check(await page.$eval('#slash', (el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 2), 'scrolling reaches the last skill');
+check(await page.$eval('#slash', (el) => { const last = el.lastElementChild.getBoundingClientRect(); const r = el.getBoundingClientRect(); return last.bottom <= r.bottom + 1 && last.top >= r.top; }), 'the last skill is visible after scrolling');
+await shot('slash-1b-scrolled');
+await page.$eval('#slash', (el) => { el.scrollTop = 0; });
 await shot('slash-1-menu');
 await page.type('#composer', 'g');
 check((await page.$$eval('.slash-item b', (els) => els.map((el) => el.innerText))).join(' ') === '/goal', 'typing filters by prefix');

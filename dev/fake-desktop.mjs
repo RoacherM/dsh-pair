@@ -116,7 +116,9 @@ const fakeServices = {
     },
   },
   typert: { lookups: { get: (key) => (key === 'agent' ? { resolve: async (id) => (id === 's1' ? agentS1 : undefined) } : undefined) } },
-  sessionSkillCatalog: { list: async () => ({ skills: [{ name: 'code-review', description: '评审当前改动' }, { name: 'commit', description: '整理并提交' }] }) },
+  // Enough skills that the menu has to scroll.
+  sessionSkillCatalog: { list: async () => ({ skills: [{ name: 'code-review', description: '评审当前改动' }, { name: 'commit', description: '整理并提交' },
+    ...Array.from({ length: 20 }, (_, i) => ({ name: `extra-skill-${String(i + 1).padStart(2, '0')}`, description: `第 ${i + 1} 个技能` }))] }) },
 };
 
 const projectionValues = () => ({

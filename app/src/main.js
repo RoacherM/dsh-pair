@@ -633,6 +633,8 @@ function renderSlash() {
   if (!el || !input || !s) return;
   if (input.value.startsWith('/')) loadSlash(s);
   const { items, hint } = slashMenu(s.slash, input.value);
+  // A new prefix starts the list from the top.
+  if (el.dataset.query !== input.value) { el.dataset.query = input.value; el.scrollTop = 0; }
   const pick = (item) => {
     input.value = `/${item.name} `;
     input.focus();
