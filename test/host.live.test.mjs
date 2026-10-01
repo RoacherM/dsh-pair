@@ -16,6 +16,7 @@ function fakeCtx() {
   const disposers = [];
   const prompts = [];
   const selections = [];
+  const queueActions = [];
   const presets = new Map([['s1', 'danger-full-access']]);
   const session = { id: 's1', header: () => ({}) };
   let followPush;
@@ -56,6 +57,7 @@ function fakeCtx() {
           { id: 'claude', name: 'Claude', models: [{ id: 'opus', name: 'Opus 5.5', description: 'x', reasoning: { efforts: [{ id: 'high', name: 'High', description: 'y' }], defaultEffort: 'high' } }, { id: 'haiku', name: 'Haiku' }] },
         ] };
       },
+      async updateQueue(req) { queueActions.push(req); return { accepted: true }; },
       async selectModel(req) { selections.push(req); return { selected: { provider: req.provider, model: req.model, reasoningEffort: req.reasoningEffort } }; },
     },
     agents: { roots: () => [{ session }], list: () => [{ session }], get: (id) => (id === 's1' ? { session } : undefined) },
@@ -68,7 +70,7 @@ function fakeCtx() {
       },
     } : undefined),
   };
-  return { ctx, routes, disposers, prompts, selections, presets, followPush: (f) => followPush(f) };
+  return { ctx, routes, disposers, prompts, selections, queueActions, presets, followPush: (f) => followPush(f) };
 }
 
 function phoneSocket(url) {
@@ -134,6 +136,16 @@ test('pair, browse, prompt, live stream, away approval — through the real rela
   assert.deepEqual(f.selections, [{ sessionId: 's1', provider: 'claude', model: 'haiku' }]);
   assert.equal(switched.model.model, 'haiku');
   await assert.rejects(rpc('session.model', { sessionId: 's1' }), /请选择模型/);
+
+  // --- the queue, as in DSH's composer: steer or remove a queued message
+  await rpc('queue.steer', { sessionId: 's1', itemId: 'm1' });
+  await rpc('queue.remove', { sessionId: 's1', itemId: 'm2' });
+  assert.deepEqual(f.queueActions, [
+    { sessionId: 's1', itemId: 'm1', action: { kind: 'steer' } },
+    { sessionId: 's1', itemId: 'm2', action: { kind: 'remove' } },
+  ]);
+  assert.deepEqual(watched.stats, { turns: null, steps: null, tps: null, cacheHit: null, context: null }, 'no numbers yet in this fake session');
+  assert.deepEqual(watched.queue, []);
 
   f.followPush({ type: 'assistant-stream', frame: { type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 2 } });
   f.followPush({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: 'a1', revision: 1, index: 0, time: 1, chunk: { type: 'text-delta', index: 0, text: '正在' } } });

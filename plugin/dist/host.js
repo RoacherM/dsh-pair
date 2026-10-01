@@ -14681,6 +14681,40 @@ function streamText(stream = []) {
   for (const chunk of stream) if (chunk?.type === "text-delta" && typeof chunk.text === "string") text += chunk.text;
   return text;
 }
+function statsOf(values = {}) {
+  const s = values.sessionStats;
+  const u = values.tokenUsage;
+  const p = values.contextPressure;
+  const billed = u ? (u.uncachedInputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0) : 0;
+  let cacheHit = null;
+  if (billed > 0) {
+    cacheHit = u.cacheReadTokens >= billed ? 100 : Math.min(99, Math.round(u.cacheReadTokens / billed * 100));
+  }
+  const used = p?.projectedTokens ?? p?.pressureTokens;
+  return {
+    turns: s?.turns ?? null,
+    steps: s?.steps ?? null,
+    tps: s?.decodeMs > 0 ? Math.round(s.decodeTokens / (s.decodeMs / 1e3)) : null,
+    cacheHit,
+    context: used !== void 0 && p?.contextWindow ? Math.min(100, Math.round(used / p.contextWindow * 100)) : null
+  };
+}
+function queueOf(inbox) {
+  const items = [];
+  for (const [target, list] of [["next-turn", inbox?.["next-turn"]], ["next-step", inbox?.["next-step"]]]) {
+    for (const message of Array.isArray(list) ? list : []) {
+      if (message?.role !== "user" || message.source?.kind !== "user") continue;
+      const content = message.content ?? [];
+      items.push({
+        id: message.id,
+        target,
+        text: clip(textOf(content), 400),
+        images: Array.isArray(content) ? content.filter((part) => part?.type === "image").length : 0
+      });
+    }
+  }
+  return items;
+}
 
 // src/host/uploads.js
 import { randomUUID as randomUUID2 } from "node:crypto";
@@ -14749,6 +14783,8 @@ var WATCH_WINDOW = { minMessages: 24, minTurns: 2 };
 var MAX_SNAPSHOT_ITEMS = 120;
 var LIVE_THROTTLE_MS = 120;
 var MAX_KNOWN_IMAGES = 400;
+var STATS_DELAY_MS = 300;
+var STATS_EVENTS = /* @__PURE__ */ new Set(["turn/end", "step/end", "assistant/message", "request/context", "agent/inbox/spliced", "compaction/end", "user/message"]);
 function createPhones({ ctx, state, pairing, away, push, images, link: getLink, log = () => {
 }, onChange = () => {
 } }) {
@@ -14939,6 +14975,9 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
       const { selected } = await ctx.sessionController.selectModel({ sessionId: String(p.sessionId), ...selection });
       return { model: selected };
     },
+    // The queue, as in DSH's composer: steer a queued message into the running turn, or remove it.
+    "queue.steer": (peer, p) => ctx.sessionController.updateQueue({ sessionId: String(p.sessionId), itemId: String(p.itemId), action: { kind: "steer" } }),
+    "queue.remove": (peer, p) => ctx.sessionController.updateQueue({ sessionId: String(p.sessionId), itemId: String(p.itemId), action: { kind: "remove" } }),
     "upload.put": (peer, p) => peer.uploads.put(p),
     "upload.drop": (peer, p) => {
       peer.uploads.drop(p.id);
@@ -14995,6 +15034,7 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
   function stopWatch(peer) {
     peer.watch?.abort.abort();
     clearTimeout(peer.watch?.liveTimer);
+    clearTimeout(peer.watch?.statsTimer);
     peer.watch = null;
   }
   async function watch(peer, sessionId) {
@@ -15026,7 +15066,9 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
       live: w.live,
       todos: values.todos ?? null,
       preset: values.permissions?.currentValue ?? null,
-      model: values.modelSelection?.next ?? null
+      model: values.modelSelection?.next ?? null,
+      stats: statsOf(values),
+      queue: queueOf(values.inbox)
     };
   }
   function flushLive(peer, w) {
@@ -15037,6 +15079,18 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
   }
   function queueLive(peer, w) {
     if (!w.liveTimer) w.liveTimer = setTimeout(() => flushLive(peer, w), LIVE_THROTTLE_MS);
+  }
+  function queueStats(peer, w) {
+    if (w.statsTimer) return;
+    w.statsTimer = setTimeout(async () => {
+      w.statsTimer = null;
+      try {
+        const baseline = await ctx.sessionController.projections({ sessionId: w.sessionId }, AbortSignal.timeout(1e4));
+        const values = baseline?.values ?? {};
+        if (peer.watch === w) event(peer, "stats", { sessionId: w.sessionId, stats: statsOf(values), queue: queueOf(values.inbox) });
+      } catch {
+      }
+    }, STATS_DELAY_MS);
   }
   async function pump(peer, w, iterator) {
     try {
@@ -15049,6 +15103,7 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
             titles.set(w.sessionId, frame.event.data.title);
             event(peer, "title", { sessionId: w.sessionId, title: frame.event.data.title });
           }
+          if (STATS_EVENTS.has(frame.event.type)) queueStats(peer, w);
           if (frame.event.type === "model/selection") {
             modelOf(w.sessionId).then((model) => {
               if (peer.watch === w) event(peer, "model", { sessionId: w.sessionId, model });

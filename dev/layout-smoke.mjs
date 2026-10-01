@@ -40,6 +40,8 @@ try {
   await shot('ui-1-session-light');
   check((await text('#model')) === 'Opus 5.5 High', `model pill shows "${await text('#model')}"`);
   check(await page.$eval('#send', (b) => b.disabled), 'send is disabled while the box is empty');
+  const statsLine = await text('#stats');
+  check(statsLine.replace(/\s+/g, ' ') === '1 轮 3 步 · 缓存 90% · 上下文 41% · 55 tok/s', `stats line: ${statsLine.replace(/\s+/g, ' ')}`);
 
   await page.click('.msg.assistant .msg-actions .act-btn');
   const copied = await page.evaluate(() => navigator.clipboard.readText());
@@ -73,7 +75,15 @@ try {
   await page.waitForFunction(() => document.querySelector('#send').dataset.stop === '1', { timeout: 15000 });
   await shot('ui-4-running');
   check(await page.$$eval('.log > .tool', (n) => n.length) === 0 && await page.$$eval('.steps', (n) => n.length) > 0, 'tool calls are folded into steps rows');
-  check(!(await page.$eval('#mode', (b) => b.hidden)), 'queue/steer pill shows while running');
+  check(!(await page.$('#mode')), 'no queue/steer toggle');
+  await page.type('#composer', '顺便看看 README');
+  await page.click('#send');
+  await page.waitForSelector('.qitem', { timeout: 15000 });
+  check((await text('.qitem .qtext')) === '顺便看看 README', 'a message sent mid-turn waits in the queue');
+  await shot('ui-4b-queued');
+  await page.click('.qitem .qact');
+  await page.waitForFunction(() => !document.querySelector('.qitem') && [...document.querySelectorAll('.msg.user')].some((m) => m.innerText.includes('顺便看看 README')), { timeout: 15000 });
+  check(true, '插话 steers it into the running turn');
   await page.waitForFunction(() => document.body.innerText.includes('收到：「好的，改吧」') && !document.querySelector('.md.live'), { timeout: 30000 });
 
   await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);

@@ -333,6 +333,9 @@ function onEvent(msg) {
       if (app.session?.id === msg.sessionId) { app.session.title = msg.title; renderSessionChrome(); }
       break;
     }
+    case 'stats':
+      if (app.session?.id === msg.sessionId) { app.session.stats = msg.stats; app.session.queue = msg.queue ?? []; renderStats(); renderQueue(); }
+      break;
     case 'model':
       if (app.session?.id === msg.sessionId) { app.session.model = msg.model; renderSessionChrome(); }
       break;
@@ -557,7 +560,7 @@ async function openSession(id, { silent = false } = {}) {
   try {
     const r = await app.link.rpc('session.watch', { sessionId: id });
     if (app.session?.id !== id) return;
-    Object.assign(app.session, { title: r.title ?? app.session.title, cwd: r.cwd, model: r.model ?? null, hasMore: r.hasMore, firstSeq: r.firstSeq, live: r.live, loading: false, items: [], tools: new Map() });
+    Object.assign(app.session, { title: r.title ?? app.session.title, cwd: r.cwd, model: r.model ?? null, stats: r.stats ?? null, queue: r.queue ?? [], hasMore: r.hasMore, firstSeq: r.firstSeq, live: r.live, loading: false, items: [], tools: new Map() });
     loadModels();
     $('#log') && fill($('#log'));
     for (const item of r.items) addItem(item, false);
@@ -591,6 +594,8 @@ function renderSession() {
       h('div', { id: 'live' })),
     h('div', { id: 'pending', class: 'pending-inline' }),
     h('footer', { class: 'composer' },
+      h('div', { class: 'queue', id: 'queue' }),
+      h('div', { class: 'stats', id: 'stats' }),
       h('div', { class: 'composer-card' },
         h('div', { class: 'drafts', id: 'drafts' }),
         input,
@@ -598,7 +603,6 @@ function renderSession() {
           h('label', { class: 'round-btn sm', 'aria-label': '添加图片' }, icon('plus'),
             h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onChange: (e) => { addDraftImages([...e.target.files]); e.target.value = ''; } })),
           h('button', { class: 'pill', id: 'model', hidden: true, onClick: openModelPicker }),
-          h('button', { class: 'pill', id: 'mode', hidden: true, onClick: () => { app.sendMode = app.sendMode === 'steer' ? 'queue' : 'steer'; renderSessionChrome(); } }),
           h('span', { class: 'grow' }),
           h('button', { class: 'send', id: 'send', 'aria-label': '发送', onClick: () => ($('#send')?.dataset.stop ? stopSession() : sendMessage()) }, icon('send'))))));
 }
@@ -621,13 +625,7 @@ function renderSessionChrome() {
   const t = $('#stitle');
   if (!s || !t) return;
   fill(t, h('b', {}, s.title || '会话'), h('span', { class: 'status' }, s.running ? h('span', { class: 'dot busy' }) : null, s.running ? '运行中' : base(s.cwd) || '空闲'));
-  const mode = $('#mode');
-  if (mode) {
-    app.sendMode ??= 'queue';
-    mode.hidden = !s.running;
-    fill(mode, app.sendMode === 'steer' ? '插话' : '排队');
-    mode.setAttribute('aria-label', app.sendMode === 'steer' ? '立即插话（点按切换）' : '本轮结束后发送（点按切换）');
-  }
+  renderStats(); renderQueue();
   const model = $('#model');
   if (model) {
     const label = modelLabel(s.model ?? app.models?.default);
@@ -638,6 +636,39 @@ function renderSessionChrome() {
   renderPending();
   const pend = $('#pending');
   if (pend) for (const card of [...pend.children]) card.hidden = false;
+}
+
+// ---- stats and queue (as in DSH's composer)
+/** "12 轮 48 步 · 缓存 93% · 上下文 41% · 52 tok/s" — only the numbers DSH has. */
+function renderStats() {
+  const el = $('#stats');
+  const st = app.session?.stats;
+  if (!el) return;
+  const parts = [];
+  if (st?.turns) parts.push(`${st.turns} 轮 ${st.steps ?? 0} 步`);
+  if (st?.cacheHit !== null && st?.cacheHit !== undefined) parts.push(`缓存 ${st.cacheHit}%`);
+  if (st?.context !== null && st?.context !== undefined) parts.push(h('span', { class: st.context >= 80 ? 'warn' : '' }, `上下文 ${st.context}%`));
+  if (st?.tps) parts.push(`${st.tps} tok/s`);
+  fill(el, parts.flatMap((part, i) => (i ? [h('i', {}, '·'), part] : [part])));
+}
+
+/** Messages sent while the agent works wait here; each can be steered into the running turn. */
+function renderQueue() {
+  const el = $('#queue');
+  const s = app.session;
+  if (!el || !s) return;
+  fill(el, (s.queue ?? []).map((q) => h('div', { class: 'qitem' },
+    h('span', { class: 'qtext' }, q.text || `[${q.images} 张图片]`, q.text && q.images ? h('small', {}, ` +${q.images} 图`) : null),
+    q.target === 'next-step' ? h('span', { class: 'qstate' }, '插话中')
+      : h('button', { class: 'qact', disabled: !s.running, onClick: () => queueAction('queue.steer', q.id) }, '插话'),
+    q.target === 'next-step' ? null : h('button', { class: 'qact x', 'aria-label': '删除排队消息', onClick: () => queueAction('queue.remove', q.id) }, icon('x')))));
+}
+
+async function queueAction(method, itemId) {
+  const s = app.session;
+  if (!s) return;
+  try { await app.link.rpc(method, { sessionId: s.id, itemId }); vibrate(); }
+  catch (e) { toast(method === 'queue.steer' ? `插话失败：${e.message}` : e.message, 'err'); }
 }
 
 // ---- sheets, models, copying
@@ -896,7 +927,7 @@ async function sendMessage() {
       uploads.push(await uploadImage(d.blob, d.name, (sent) => { if (send) send.dataset.progress = `${Math.round(((before + sent) / total) * 100)}%`; }));
       before += d.blob.size;
     }
-    await app.link.rpc('session.prompt', { sessionId: s.id, text, uploads, mode: s.running ? app.sendMode : 'queue', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, 90_000);
+    await app.link.rpc('session.prompt', { sessionId: s.id, text, uploads, mode: 'queue', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, 90_000);
     s.sending = false;
     clearDrafts();
     s.running = true; renderSessionChrome(); renderLive(); scrollBottom();

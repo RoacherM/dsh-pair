@@ -94,3 +94,47 @@ export function streamText(stream = []) {
   for (const chunk of stream) if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text;
   return text;
 }
+
+/**
+ * The session's running numbers as DSH's own composer shows them, from its projections:
+ * `sessionStats` (turns, steps, decode speed), `tokenUsage` (cache hit = cache reads over all billed
+ * prompt input) and `contextPressure` (projected tokens over the context window).
+ */
+export function statsOf(values = {}) {
+  const s = values.sessionStats;
+  const u = values.tokenUsage;
+  const p = values.contextPressure;
+  const billed = u ? (u.uncachedInputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0) : 0;
+  let cacheHit = null;
+  if (billed > 0) {
+    // Like DSH: 100 only for a full hit, never rounded up to it.
+    cacheHit = u.cacheReadTokens >= billed ? 100 : Math.min(99, Math.round((u.cacheReadTokens / billed) * 100));
+  }
+  const used = p?.projectedTokens ?? p?.pressureTokens;
+  return {
+    turns: s?.turns ?? null,
+    steps: s?.steps ?? null,
+    tps: s?.decodeMs > 0 ? Math.round(s.decodeTokens / (s.decodeMs / 1000)) : null,
+    cacheHit,
+    context: used !== undefined && p?.contextWindow ? Math.min(100, Math.round((used / p.contextWindow) * 100)) : null,
+  };
+}
+
+/**
+ * Messages waiting in the session's inbox (the `inbox` projection): `next-turn` ones are queued and
+ * can be steered in; `next-step` ones are already steering into the running turn.
+ */
+export function queueOf(inbox) {
+  const items = [];
+  for (const [target, list] of [['next-turn', inbox?.['next-turn']], ['next-step', inbox?.['next-step']]]) {
+    for (const message of Array.isArray(list) ? list : []) {
+      if (message?.role !== 'user' || message.source?.kind !== 'user') continue;
+      const content = message.content ?? [];
+      items.push({
+        id: message.id, target, text: clip(textOf(content), 400),
+        images: Array.isArray(content) ? content.filter((part) => part?.type === 'image').length : 0,
+      });
+    }
+  }
+  return items;
+}

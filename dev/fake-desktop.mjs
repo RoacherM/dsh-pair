@@ -57,6 +57,39 @@ const push = (frame) => { for (const f of followers) f(frame); };
 const emit = (name, ...args) => { for (const fn of listeners.get(name) ?? []) fn(...args); };
 const waterfall = (name, payload, fallback) => { const list = listeners.get(name) ?? []; const run = (i) => (i < list.length ? list[i].call({}, payload, () => run(i + 1)) : fallback()); return run(0); };
 
+const add = (event) => { event.seq = ++seq; event.time = Date.now(); records.push({ type: 'event', event }); push({ type: 'event', event }); };
+const inbox = { 'next-turn': [], 'next-step': [] };
+const stats = { turns: 1, steps: 3, llmMs: 9000, toolMs: 400, ttftMs: 800, ttftSteps: 1, decodeMs: 4000, decodeTokens: 220 };
+const usage = { uncachedInputTokens: 3200, cacheReadTokens: 38000, cacheWriteTokens: 900, outputTokens: 700 };
+function runTurn(content) {
+  add({ type: 'user/message', data: { content, source: { kind: 'user' } } });
+  const said = content.find((part) => part.type === 'text')?.text ?? '（一张图片）';
+  const s = sessions[0]; s.running = true; s.updatedAt = Date.now(); emit('api-session/status', 's1', true);
+  setTimeout(async () => {
+    const callId = `c${seq + 1}`;
+    add({ type: 'tool/call', data: { callId, name: 'bash', arguments: JSON.stringify({ command: 'npm test', description: 'Run the test suite' }) } });
+    // ask for approval (only intercepted in away mode)
+    const verdict = await waterfall('approval/request', { agent: { session }, toolName: 'bash', reason: 'npm test' }, () => Promise.resolve('allowed-once'));
+    add({ type: 'tool/result', data: { callId, message: { content: [{ type: 'text', text: verdict === 'allowed-once' ? '✓ 42 tests passed' : `denied (${verdict})` }] }, ...(verdict === 'allowed-once' ? {} : { error: 'denied' }) } });
+    const reply = `收到：「${said}」。测试${verdict === 'allowed-once' ? '全部通过 ✅' : '被拒绝执行'}。\n\n- 修复了循环边界\n- 增加了一条回归测试`;
+    const attempt = 'a' + seq;
+    push({ type: 'assistant-stream', frame: { type: 'start', attemptId: attempt, revision: 1, turn: 1, step: 1 } });
+    for (const ch of reply) { push({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: attempt, revision: 1, index: 0, time: Date.now(), chunk: { type: 'text-delta', index: 0, text: ch } } }); await new Promise((r) => setTimeout(r, 40)); }
+    push({ type: 'assistant-stream', frame: { type: 'end', attemptId: attempt, revision: 1, index: 1, outcome: { kind: 'committed', eventType: 'assistant/message', seq: seq + 1 } } });
+    add({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: reply }] } } });
+    Object.assign(stats, { turns: stats.turns + 1, steps: stats.steps + 2, decodeMs: stats.decodeMs + 1500, decodeTokens: stats.decodeTokens + 90 });
+    Object.assign(usage, { cacheReadTokens: usage.cacheReadTokens + 41000, uncachedInputTokens: usage.uncachedInputTokens + 2600, outputTokens: usage.outputTokens + 400 });
+    add({ type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    s.running = false; emit('api-session/status', 's1', false);
+    const next = inbox['next-turn'].shift();
+    if (next) { add({ type: 'agent/inbox/spliced', data: { target: 'next-turn' } }); setTimeout(() => runTurn(next.content), 300); }
+  }, 800);
+}
+const projectionValues = () => ({
+  modelSelection: { lastUsed: null, next: model }, inbox, sessionStats: stats, tokenUsage: usage,
+  contextPressure: { contextWindow: 200000, pressureTokens: 78000, projectedTokens: 82000 },
+});
+
 const ctx = {
   logger: { warn: (m) => console.log('[warn]', m) },
   on(name, fn, prepend) { const l = listeners.get(name) ?? []; prepend ? l.unshift(fn) : l.push(fn); listeners.set(name, l); },
@@ -66,7 +99,7 @@ const ctx = {
     async list() { return { items: sessions.map((s) => ({ ...s, blank: false, agentAvailable: true, projections: { values: { title: s.title } } })) }; },
     async follow(req, signal) {
       const id = req.address.sessionId;
-      const queue = [{ type: 'snapshot', header: { cwd: '/Users/me/proj' }, cursor: seq, hasMore: false, projections: { values: { title: sessions.find((s) => s.sessionId === id)?.title, modelSelection: { lastUsed: null, next: model } } }, records: id === 's1' ? records : [] }];
+      const queue = [{ type: 'snapshot', header: { cwd: '/Users/me/proj' }, cursor: seq, hasMore: false, projections: { values: { title: sessions.find((s) => s.sessionId === id)?.title, ...projectionValues() } }, records: id === 's1' ? records : [] }];
       let wake;
       const fn = (frame) => { if (id === 's1') { queue.push(frame); wake?.(); } };
       followers.add(fn);
@@ -74,25 +107,22 @@ const ctx = {
       return (async function* () { while (!signal.aborted) { if (queue.length) { yield queue.shift(); continue; } await new Promise((r) => { wake = r; signal.addEventListener('abort', r, { once: true }); }); } })();
     },
     async prompt(req) {
-      const add = (event) => { event.seq = ++seq; event.time = Date.now(); records.push({ type: 'event', event }); push({ type: 'event', event }); };
-      add({ type: 'user/message', data: { content: admit(req.content), source: { kind: 'user' } } });
-      const said = req.content.find((part) => part.type === 'text')?.text ?? '（一张图片）';
-      const s = sessions[0]; s.running = true; s.updatedAt = Date.now(); emit('api-session/status', 's1', true);
-      setTimeout(async () => {
-        const callId = `c${seq + 1}`;
-        add({ type: 'tool/call', data: { callId, name: 'bash', arguments: JSON.stringify({ command: 'npm test', description: 'Run the test suite' }) } });
-        // ask for approval (only intercepted in away mode)
-        const verdict = await waterfall('approval/request', { agent: { session }, toolName: 'bash', reason: 'npm test' }, () => Promise.resolve('allowed-once'));
-        add({ type: 'tool/result', data: { callId, message: { content: [{ type: 'text', text: verdict === 'allowed-once' ? '✓ 42 tests passed' : `denied (${verdict})` }] }, ...(verdict === 'allowed-once' ? {} : { error: 'denied' }) } });
-        const reply = `收到：「${said}」。测试${verdict === 'allowed-once' ? '全部通过 ✅' : '被拒绝执行'}。\n\n- 修复了循环边界\n- 增加了一条回归测试`;
-        push({ type: 'assistant-stream', frame: { type: 'start', attemptId: 'a' + seq, revision: 1, turn: 1, step: 1 } });
-        const attempt = 'a' + seq;
-        for (const ch of reply) { push({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: attempt, revision: 1, index: 0, time: Date.now(), chunk: { type: 'text-delta', index: 0, text: ch } } }); await new Promise((r) => setTimeout(r, 25)); }
-        push({ type: 'assistant-stream', frame: { type: 'end', attemptId: attempt, revision: 1, index: 1, outcome: { kind: 'committed', eventType: 'assistant/message', seq: seq + 1 } } });
-        add({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: reply }] } } });
-        add({ type: 'turn/end', data: { reason: { kind: 'completed' } } });
-        s.running = false; emit('api-session/status', 's1', false);
-      }, 800);
+      const content = admit(req.content);
+      // While a turn runs, a message waits in the inbox (DSH's queue) until the turn ends or is steered in.
+      if (sessions[0].running) {
+        inbox['next-turn'].push({ id: `q${seq}-${inbox['next-turn'].length}`, role: 'user', content, source: { kind: 'user' } });
+        add({ type: 'agent/inbox/spliced', data: { target: 'next-turn' } });
+        return { accepted: true };
+      }
+      runTurn(content);
+      return { accepted: true };
+    },
+    async updateQueue(req) {
+      const i = inbox['next-turn'].findIndex((m) => m.id === req.itemId);
+      if (i < 0) throw new Error('queued item is no longer pending');
+      const [message] = inbox['next-turn'].splice(i, 1);
+      add({ type: 'agent/inbox/spliced', data: { target: 'next-turn' } });
+      if (req.action.kind === 'steer') add({ type: 'user/message', data: { content: message.content, source: { kind: 'user' } } });
       return { accepted: true };
     },
     cancel() { return {}; },
@@ -106,7 +136,7 @@ const ctx = {
         { id: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-chat', name: 'DeepSeek V4' }] },
       ] };
     },
-    async projections() { return { asOfSeq: seq, values: { modelSelection: { lastUsed: null, next: model } } }; },
+    async projections() { return { asOfSeq: seq, values: projectionValues() }; },
     async selectModel(req) {
       model = { provider: req.provider, model: req.model, ...(req.reasoningEffort ? { reasoningEffort: req.reasoningEffort } : {}) };
       const event = { type: 'model/selection', seq: ++seq, time: Date.now(), data: model };

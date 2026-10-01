@@ -7,13 +7,16 @@
  */
 import { randomUUID } from 'node:crypto';
 import { desktopAccept } from '../../../shared/e2e.js';
-import { projectEvent, projectRecords, streamText } from './project.js';
+import { projectEvent, projectRecords, queueOf, statsOf, streamText } from './project.js';
 import { createUploads } from './uploads.js';
 
 const WATCH_WINDOW = { minMessages: 24, minTurns: 2 };
 const MAX_SNAPSHOT_ITEMS = 120;
 const LIVE_THROTTLE_MS = 120;
 const MAX_KNOWN_IMAGES = 400;
+const STATS_DELAY_MS = 300;
+// Events after which the session's numbers or its queue may have changed.
+const STATS_EVENTS = new Set(['turn/end', 'step/end', 'assistant/message', 'request/context', 'agent/inbox/spliced', 'compaction/end', 'user/message']);
 
 export function createPhones({ ctx, state, pairing, away, push, images, link: getLink, log = () => {}, onChange = () => {} }) {
   const peers = new Map(); // cid → peer
@@ -189,6 +192,9 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
       const { selected } = await ctx.sessionController.selectModel({ sessionId: String(p.sessionId), ...selection });
       return { model: selected };
     },
+    // The queue, as in DSH's composer: steer a queued message into the running turn, or remove it.
+    'queue.steer': (peer, p) => ctx.sessionController.updateQueue({ sessionId: String(p.sessionId), itemId: String(p.itemId), action: { kind: 'steer' } }),
+    'queue.remove': (peer, p) => ctx.sessionController.updateQueue({ sessionId: String(p.sessionId), itemId: String(p.itemId), action: { kind: 'remove' } }),
     'upload.put': (peer, p) => peer.uploads.put(p),
     'upload.drop': (peer, p) => { peer.uploads.drop(p.id); return {}; },
     'session.cancel': (peer, p) => ctx.sessionController.cancel({ sessionId: String(p.sessionId) }),
@@ -236,6 +242,7 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
   function stopWatch(peer) {
     peer.watch?.abort.abort();
     clearTimeout(peer.watch?.liveTimer);
+    clearTimeout(peer.watch?.statsTimer);
     peer.watch = null;
   }
 
@@ -263,6 +270,7 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
       hasMore: snapshot.hasMore ?? false, firstSeq: snapshot.records?.[0]?.event?.seq ?? null,
       live: w.live, todos: values.todos ?? null, preset: values.permissions?.currentValue ?? null,
       model: values.modelSelection?.next ?? null,
+      stats: statsOf(values), queue: queueOf(values.inbox),
     };
   }
 
@@ -277,6 +285,19 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
     if (!w.liveTimer) w.liveTimer = setTimeout(() => flushLive(peer, w), LIVE_THROTTLE_MS);
   }
 
+  /** Numbers and queue are projections, not stream frames: read them again shortly after a change. */
+  function queueStats(peer, w) {
+    if (w.statsTimer) return;
+    w.statsTimer = setTimeout(async () => {
+      w.statsTimer = null;
+      try {
+        const baseline = await ctx.sessionController.projections({ sessionId: w.sessionId }, AbortSignal.timeout(10_000));
+        const values = baseline?.values ?? {};
+        if (peer.watch === w) event(peer, 'stats', { sessionId: w.sessionId, stats: statsOf(values), queue: queueOf(values.inbox) });
+      } catch {}
+    }, STATS_DELAY_MS);
+  }
+
   async function pump(peer, w, iterator) {
     try {
       for (;;) {
@@ -288,6 +309,7 @@ export function createPhones({ ctx, state, pairing, away, push, images, link: ge
             titles.set(w.sessionId, frame.event.data.title);
             event(peer, 'title', { sessionId: w.sessionId, title: frame.event.data.title });
           }
+          if (STATS_EVENTS.has(frame.event.type)) queueStats(peer, w);
           // The model was switched (on the desktop or by a phone): send the session's next model.
           if (frame.event.type === 'model/selection') {
             modelOf(w.sessionId).then((model) => { if (peer.watch === w) event(peer, 'model', { sessionId: w.sessionId, model }); });
