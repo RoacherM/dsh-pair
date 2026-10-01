@@ -1,6 +1,6 @@
 # dsh-pair：远程控制（Remote Control）
 
-扫码配对后，在 iPhone（PWA）上可以：看会话列表和实时输出、发消息（排队或插话）、停止、新建会话、审批和回答提问（离开模式），并在任务完成、需要审批或出错时收到推送。
+扫码配对后，在 iPhone（PWA）上可以：看会话列表和实时输出、发消息（排队或插话）、运行斜杠命令、停止、新建会话、审批和回答提问（不开离开模式也行），并在任务完成、需要审批或出错时收到推送。
 
 ```
 iPhone PWA ──wss──▶ Cloudflare Worker + Durable Object（中继，只转发密文）◀──wss（出站）── DSH 插件
@@ -37,9 +37,11 @@ cd plugin && NODE_PATH=../node_modules node build.mjs # 构建插件
 
 ## 离开模式
 
-开启后，当前运行的会话（以及离开期间新建的会话）会切到 `workspace-write` 预设（`approval: ask`），原预设记录下来，关闭时恢复。插件以 prepend 方式监听 `approval/request` 和 `user-questions/request`：请求进入待处理队列，推送到手机，由已配对设备或电脑「远程控制」页中先作答的一方决定。审批 30 分钟无人处理即自动拒绝。关闭离开模式时，所有请求直接交回 DSH 自己的界面处理。
+开启后，当前运行的会话（以及离开期间新建的会话）会切到 `workspace-write` 预设（`approval: ask`），原预设记录下来，关闭时恢复。插件以 prepend 方式监听 `approval/request` 和 `user-questions/request`：请求进入待处理队列，推送到手机，由已配对设备或电脑「远程控制」页中先作答的一方决定。审批 30 分钟无人处理即自动拒绝。关闭离开模式时，离开期间只交给手机的请求退回 DSH 自己的界面。
 
-配置项（profile patch 的 `dsh-pair` 行）：`relayUrl`、`awayPreset`（默认 `workspace-write`）、`approvalTimeoutMinutes`（默认 30）、`notifyAfterSeconds`（运行超过这个时长才推送「已完成」，默认 20）、`phoneCommands`（手机能运行的斜杠命令，默认 `[compact, goal, plan, export]`）。
+不开离开模式时（且已配对设备），审批和提问照常弹在 DSH 界面上，同时也出现在手机上，不推送。哪边先答算哪边；手机先答时，插件通过请求的 signal 关掉 DSH 的弹窗。DSH 没有界面能显示（没有连着的窗口）时，只能在手机上处理：推送到手机，审批同样 30 分钟超时拒绝。`answerOnPhone: false` 关掉这一行为。
+
+配置项（profile patch 的 `dsh-pair` 行）：`relayUrl`、`answerOnPhone`（默认 true）、`awayPreset`（默认 `workspace-write`）、`approvalTimeoutMinutes`（默认 30）、`notifyAfterSeconds`（运行超过这个时长才推送「已完成」，默认 20）、`phoneCommands`（手机能运行的斜杠命令，默认 `[compact, goal, plan, export]`）。
 
 ## 斜杠命令
 

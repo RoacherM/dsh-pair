@@ -68,8 +68,13 @@ function runTurn(content) {
   setTimeout(async () => {
     const callId = `c${seq + 1}`;
     add({ type: 'tool/call', data: { callId, name: 'bash', arguments: JSON.stringify({ command: 'npm test', description: 'Run the test suite' }) } });
-    // ask for approval (only intercepted in away mode)
-    const verdict = await waterfall('approval/request', { agent: { session }, toolName: 'bash', reason: 'npm test' }, () => Promise.resolve('allowed-once'));
+    // Ask for approval. The fallback stands for DSH's own prompt: it answers after FAKE_DESKTOP_MS
+    // (default at once) unless the request's signal closes it first (a phone answered).
+    const req = { agent: { session }, toolName: 'bash', reason: 'npm test' };
+    const verdict = await waterfall('approval/request', req, () => new Promise((resolve) => {
+      const timer = setTimeout(() => { console.log('desktop prompt answered'); resolve('allowed-once'); }, Number(process.env.FAKE_DESKTOP_MS ?? 0));
+      req.signal?.addEventListener('abort', () => { clearTimeout(timer); console.log('desktop prompt closed'); resolve('cancelled'); });
+    }));
     add({ type: 'tool/result', data: { callId, message: { content: [{ type: 'text', text: verdict === 'allowed-once' ? '✓ 42 tests passed' : `denied (${verdict})` }] }, ...(verdict === 'allowed-once' ? {} : { error: 'denied' }) } });
     const reply = `收到：「${said}」。测试${verdict === 'allowed-once' ? '全部通过 ✅' : '被拒绝执行'}。\n\n- 修复了循环边界\n- 增加了一条回归测试`;
     const attempt = 'a' + seq;

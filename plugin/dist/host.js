@@ -14276,7 +14276,9 @@ function createAway({ ctx, state, config, log = () => {
   const approvalTimeoutMs = (config.approvalTimeoutMinutes ?? 30) * 6e4;
   const pending = /* @__PURE__ */ new Map();
   const sessionIdOf = (agent) => agent?.session?.id ?? agent?.id;
-  const active = () => state.away.on && state.devices().length > 0;
+  const paired = () => state.devices().length > 0;
+  const active = () => state.away.on && paired();
+  const sharing = () => !state.away.on && paired() && config.answerOnPhone !== false;
   function presetOf(session) {
     try {
       return ctx.permissionPresets.current(session);
@@ -14319,7 +14321,7 @@ function createAway({ ctx, state, config, log = () => {
         }
       }
       await state.setAway({ on: false, restore: {} });
-      for (const item of [...pending.values()]) settle(item.id, item.kind === "approval" ? "rejected" : null, "away-off");
+      for (const item of [...pending.values()]) if (!item.shared) settle(item.id, item.kind === "approval" ? "rejected" : null, "away-off");
     }
     onChange();
     return view();
@@ -14337,18 +14339,36 @@ function createAway({ ctx, state, config, log = () => {
     const { resolve, reject, timer, cleanup, ...rest } = item;
     return rest;
   }
-  function settle(id, answer2, by) {
+  function drop(id) {
     const item = pending.get(id);
     if (!item) return false;
     pending.delete(id);
     clearTimeout(item.timer);
     item.cleanup?.();
-    if (item.kind === "question" && answer2 === null) item.reject(new Error(by === "away-off" ? "\u79BB\u5F00\u6A21\u5F0F\u5DF2\u5173\u95ED\uFF0C\u8BF7\u5728\u7535\u8111\u4E0A\u56DE\u7B54" : "\u95EE\u9898\u5DF2\u53D6\u6D88"));
-    else item.resolve(answer2);
     onChange();
     return true;
   }
-  function enqueue(item, signal) {
+  function settle(id, answer2, by) {
+    const item = pending.get(id);
+    if (!drop(id)) return false;
+    if (item.kind === "question" && answer2 === null) item.reject(new Error(by === "away-off" ? "\u79BB\u5F00\u6A21\u5F0F\u5DF2\u5173\u95ED\uFF0C\u8BF7\u5728\u7535\u8111\u4E0A\u56DE\u7B54" : "\u95EE\u9898\u5DF2\u53D6\u6D88"));
+    else item.resolve(answer2);
+    return true;
+  }
+  function notifyPhones(item) {
+    const body2 = item.kind === "approval" ? `${item.toolName}${item.reason ? `\uFF1A${item.reason}` : ""}` : item.questions?.[0]?.question ?? "\u6709\u4E00\u4E2A\u95EE\u9898\u9700\u8981\u56DE\u7B54";
+    const title = item.sessionTitle ?? "\u4F1A\u8BDD";
+    notify({
+      title: item.kind === "approval" ? `\u9700\u8981\u5BA1\u6279 \xB7 ${title}` : `\u9700\u8981\u56DE\u7B54 \xB7 ${title}`,
+      body: body2.slice(0, 160),
+      urgent: true,
+      tag: `pending-${item.id}`,
+      sessionId: item.sessionId,
+      pendingId: item.id
+    }).catch(() => {
+    });
+  }
+  function enqueue(item, signal, { push = true } = {}) {
     pending.set(item.id, item);
     const abort = () => settle(item.id, item.kind === "approval" ? "cancelled" : null, "aborted");
     if (signal) {
@@ -14365,51 +14385,71 @@ function createAway({ ctx, state, config, log = () => {
         item.sessionTitle = title;
         onChange();
       }
-      const body2 = item.kind === "approval" ? `${item.toolName}${item.reason ? `\uFF1A${item.reason}` : ""}` : item.questions?.[0]?.question ?? "\u6709\u4E00\u4E2A\u95EE\u9898\u9700\u8981\u56DE\u7B54";
-      notify({
-        title: item.kind === "approval" ? `\u9700\u8981\u5BA1\u6279 \xB7 ${title ?? "\u4F1A\u8BDD"}` : `\u9700\u8981\u56DE\u7B54 \xB7 ${title ?? "\u4F1A\u8BDD"}`,
-        body: body2.slice(0, 160),
-        urgent: true,
-        tag: `pending-${item.id}`,
-        sessionId: item.sessionId,
-        pendingId: item.id
-      }).catch(() => {
-      });
+      if (push && pending.has(item.id)) notifyPhones(item);
     });
   }
+  function share(item, req, next, noPrompt) {
+    const signal = req.signal;
+    const answered = new AbortController();
+    try {
+      req.signal = signal ? AbortSignal.any([signal, answered.signal]) : answered.signal;
+    } catch {
+    }
+    return new Promise((resolve, reject) => {
+      Object.assign(item, {
+        shared: true,
+        resolve: (value) => {
+          answered.abort();
+          resolve(value);
+        },
+        reject: (error) => {
+          answered.abort();
+          reject(error);
+        }
+      });
+      enqueue(item, signal, { push: false });
+      Promise.resolve().then(next).then(
+        (value) => noPrompt(value, void 0) ? phonesOnly(item) : drop(item.id) && resolve(value),
+        (error) => noPrompt(void 0, error) ? phonesOnly(item) : drop(item.id) && reject(error)
+      );
+    });
+  }
+  function phonesOnly(item) {
+    if (!pending.has(item.id)) return;
+    if (item.kind === "approval") item.timer = setTimeout(() => settle(item.id, "rejected", "timeout"), approvalTimeoutMs);
+    notifyPhones(item);
+  }
+  const approvalItem = (req) => ({
+    id: randomUUID(),
+    kind: "approval",
+    createdAt: Date.now(),
+    sessionId: sessionIdOf(req.agent),
+    toolName: req.toolName ?? "tool",
+    reason: typeof req.displayReason === "string" ? req.displayReason : typeof req.reason === "string" ? req.reason : void 0,
+    callId: req.callId
+  });
+  const questionItem = (req) => ({
+    id: randomUUID(),
+    kind: "question",
+    createdAt: Date.now(),
+    sessionId: sessionIdOf(req.agent),
+    callId: req.callId,
+    questions: (req.questions ?? []).map((q) => ({ id: q.id, question: q.question, header: q.header, detail: q.detail, options: q.options, multiSelect: q.multiSelect }))
+  });
   ctx.on("approval/request", function onApproval(req, next) {
+    if (sharing()) return share(approvalItem(req), req, next, (value) => value === "unavailable");
     if (!active()) return next();
     return new Promise((resolve) => {
-      const id = randomUUID();
-      const item = {
-        id,
-        kind: "approval",
-        createdAt: Date.now(),
-        sessionId: sessionIdOf(req.agent),
-        toolName: req.toolName ?? "tool",
-        reason: typeof req.displayReason === "string" ? req.displayReason : typeof req.reason === "string" ? req.reason : void 0,
-        callId: req.callId,
-        resolve
-      };
-      item.timer = setTimeout(() => settle(id, "rejected", "timeout"), approvalTimeoutMs);
+      const item = { ...approvalItem(req), resolve };
+      item.timer = setTimeout(() => settle(item.id, "rejected", "timeout"), approvalTimeoutMs);
       enqueue(item, req.signal);
     });
   }, true);
   ctx.on("user-questions/request", function onQuestion(req, next) {
+    if (sharing()) return share(questionItem(req), req, next, (value, error) => error?.code === "NO_PROVIDER");
     if (!active()) return next();
     return new Promise((resolve, reject) => {
-      const id = randomUUID();
-      const item = {
-        id,
-        kind: "question",
-        createdAt: Date.now(),
-        sessionId: sessionIdOf(req.agent),
-        callId: req.callId,
-        questions: (req.questions ?? []).map((q) => ({ id: q.id, question: q.question, header: q.header, detail: q.detail, options: q.options, multiSelect: q.multiSelect })),
-        resolve,
-        reject
-      };
-      enqueue(item, req.signal);
+      enqueue({ ...questionItem(req), resolve, reject }, req.signal);
     });
   }, true);
   ctx.effect(() => () => {

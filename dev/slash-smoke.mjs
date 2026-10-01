@@ -65,5 +65,17 @@ check((await lastToast()).includes('不能从手机运行'), 'a command outside 
 check(await page.$$eval('.cmd', (els) => els.length) === rows, '…and never runs');
 await shot('slash-4-refused');
 
+// Away mode off: the approval shows on the phone as well (run the fake desktop with FAKE_DESKTOP_MS
+// so its own prompt waits), and answering it here closes the desktop prompt.
+await typeInto('跑一下测试');
+await page.click('.send');
+await page.waitForSelector('.pcard', { timeout: 15000 });
+check((await page.$eval('.pcard', (el) => el.innerText)).includes('电脑上也可处理'), 'away off: the approval shows on the phone too');
+await shot('slash-5-shared-approval');
+await page.evaluate(() => [...document.querySelectorAll('.pcard button')].find((b) => b.innerText.includes('允许一次')).click());
+await page.waitForFunction(() => document.body.innerText.includes('全部通过'), { timeout: 20000 });
+check(!(await page.$('.pcard')), 'answering on the phone settles it');
+await shot('slash-6-after');
+
 await browser.close();
 server.close();

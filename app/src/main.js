@@ -455,7 +455,7 @@ function renderAway() {
   if (!el) return;
   const on = app.away?.on;
   fill(el, h('button', { class: `away ${on ? 'on' : ''}`, onClick: toggleAway },
-    h('span', { class: 'away-text' }, h('b', {}, on ? '离开模式已开启' : '离开模式'), h('span', {}, on ? '审批和提问会发到这台设备' : '开启后，会话需要审批时发到这台设备')),
+    h('span', { class: 'away-text' }, h('b', {}, on ? '离开模式已开启' : '离开模式'), h('span', {}, on ? '审批和提问只发到这台设备，并推送通知' : '审批和提问在这里和电脑上都能处理；开启后会推送通知')),
     h('span', { class: `switch ${on ? 'on' : ''}` })));
 }
 async function toggleAway() {
@@ -469,7 +469,7 @@ function renderPending() {
 }
 
 function pendingCard(item) {
-  const title = item.sessionTitle ?? '会话';
+  const title = item.shared ? `${item.sessionTitle ?? '会话'} · 电脑上也可处理` : item.sessionTitle ?? '会话';
   if (item.kind === 'approval') {
     return h('div', { class: 'pcard' },
       h('div', { class: 'pcard-head' }, h('span', { class: 'tag warn' }, '需要审批'), h('span', { class: 'muted' }, title)),
