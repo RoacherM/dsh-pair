@@ -39,4 +39,8 @@ cd plugin && NODE_PATH=../node_modules node build.mjs # 构建插件
 
 开启后，当前运行的会话（以及离开期间新建的会话）会切到 `workspace-write` 预设（`approval: ask`），原预设记录下来，关闭时恢复。插件以 prepend 方式监听 `approval/request` 和 `user-questions/request`：请求进入待处理队列，推送到手机，由已配对设备或电脑「远程控制」页中先作答的一方决定。审批 30 分钟无人处理即自动拒绝。关闭离开模式时，所有请求直接交回 DSH 自己的界面处理。
 
-配置项（profile patch 的 `dsh-pair` 行）：`relayUrl`、`awayPreset`（默认 `workspace-write`）、`approvalTimeoutMinutes`（默认 30）、`notifyAfterSeconds`（运行超过这个时长才推送「已完成」，默认 20）。
+配置项（profile patch 的 `dsh-pair` 行）：`relayUrl`、`awayPreset`（默认 `workspace-write`）、`approvalTimeoutMinutes`（默认 30）、`notifyAfterSeconds`（运行超过这个时长才推送「已完成」，默认 20）、`phoneCommands`（手机能运行的斜杠命令，默认 `[compact, goal, plan, export]`）。
+
+## 斜杠命令
+
+手机发出的 `/name …`，如果是 DSH 注册的命令（`ctx.commands`），就像 DSH 输入框那样直接对会话执行，不发给模型；结果写进会话日志，手机和电脑都能看到。只有 `phoneCommands` 里的命令能从手机运行，其余命令（例如权限类的 `/danger-full-access`）由电脑拒绝。不是命令的 `/skill-name …` 照常作为消息发送，由 DSH 展开技能。输入框打 `/` 会列出可用的命令和技能。

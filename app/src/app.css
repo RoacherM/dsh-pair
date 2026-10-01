@@ -231,3 +231,19 @@ button { font: inherit; color: inherit; }
 .qact { flex: none; height: 30px; padding: 0 12px; border: none; border-radius: 999px; background: var(--l2); font-size: 13px; }
 .qact:disabled { opacity: .4; }
 .qact.x { width: 30px; padding: 6px; display: grid; place-items: center; color: var(--fg3); }
+
+/* "/" menu above the composer, and slash-command rows in the log */
+.slash { display: flex; flex-direction: column; margin-bottom: 6px; border-radius: 18px; background: var(--l1); box-shadow: 0 0 0 1px var(--line), 0 6px 22px rgba(0,0,0,.07); overflow: hidden; }
+.slash:empty { display: none; }
+.slash-item { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: none; background: none; text-align: left; font-size: 14px; }
+.slash-item + .slash-item { border-top: 1px solid var(--line); }
+.slash-item:active { background: var(--l2); }
+.slash-item b { font: 600 13.5px ui-monospace, Menlo, monospace; flex: none; }
+.slash-desc { flex: 1; min-width: 0; color: var(--fg2); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slash-hint { padding: 8px 14px; font: 12.5px ui-monospace, Menlo, monospace; color: var(--fg2); }
+.cmd { border-radius: 12px; background: var(--l1); box-shadow: 0 0 0 1px var(--line); font-size: 13px; }
+.cmd-line { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
+.cmd-line b { font: 600 12.5px ui-monospace, Menlo, monospace; flex: none; }
+.cmd.done .tool-state { background: var(--ok); animation: none; } .cmd.err .tool-state { background: var(--err); animation: none; }
+.cmd-out { padding: 0 12px 8px 28px; color: var(--fg2); white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
+.cmd-out:empty { display: none; } .cmd.err .cmd-out { color: var(--err); }

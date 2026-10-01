@@ -5,7 +5,7 @@
  */
 import { marked } from 'marked';
 import { b64, boxKeysFromSecret, decodePairLink, newBoxKeys, unb64 } from '../../shared/e2e.js';
-import { formatTokens } from './format.js';
+import { formatTokens, slashMenu } from './format.js';
 import { Link } from './link.js';
 import { scanQr } from './scan.js';
 
@@ -582,7 +582,7 @@ function leaveSession() {
 
 function renderSession() {
   const s = app.session;
-  const input = h('textarea', { id: 'composer', rows: 1, placeholder: '发消息…', onInput: (e) => { e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`; renderSendState(); } });
+  const input = h('textarea', { id: 'composer', rows: 1, placeholder: '发消息，/ 打开命令…', onInput: () => { fitComposer(); renderSendState(); renderSlash(); } });
   return h('main', { class: 'screen session' },
     h('header', { class: 'bar sbar' },
       h('button', { class: 'round-btn', 'aria-label': '返回', onClick: leaveSession }, icon('back')),
@@ -597,6 +597,7 @@ function renderSession() {
     h('footer', { class: 'composer' },
       h('div', { class: 'queue', id: 'queue' }),
       h('div', { class: 'stats', id: 'stats' }),
+      h('div', { class: 'slash', id: 'slash' }),
       h('div', { class: 'composer-card' },
         h('div', { class: 'drafts', id: 'drafts' }),
         input,
@@ -606,6 +607,42 @@ function renderSession() {
           h('button', { class: 'pill', id: 'model', hidden: true, onClick: openModelPicker }),
           h('span', { class: 'grow' }),
           h('button', { class: 'send', id: 'send', 'aria-label': '发送', onClick: () => ($('#send')?.dataset.stop ? stopSession() : sendMessage()) }, icon('send'))))));
+}
+
+function fitComposer() {
+  const input = $('#composer');
+  if (!input) return;
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+}
+
+// ---- the "/" menu: commands the desktop lets a phone run, and the session's skills
+async function loadSlash(s) {
+  // An older desktop plugin has no command list: ask again half a minute later.
+  if (s.slash || s.slashLoading || (s.slashFailed && Date.now() - s.slashFailed < 30_000)) return;
+  s.slashLoading = true;
+  try { s.slash = await app.link.rpc('commands.list', { sessionId: s.id }, 30_000); }
+  catch { s.slashFailed = Date.now(); }
+  finally { s.slashLoading = false; if (app.session === s) renderSlash(); }
+}
+
+function renderSlash() {
+  const el = $('#slash');
+  const input = $('#composer');
+  const s = app.session;
+  if (!el || !input || !s) return;
+  if (input.value.startsWith('/')) loadSlash(s);
+  const { items, hint } = slashMenu(s.slash, input.value);
+  const pick = (item) => {
+    input.value = `/${item.name} `;
+    input.focus();
+    fitComposer(); renderSendState(); renderSlash();
+  };
+  fill(el,
+    items.map((item) => h('button', { class: 'slash-item', onClick: () => pick(item) },
+      h('b', {}, `/${item.name}`), item.kind === 'skill' ? h('span', { class: 'tag' }, '技能') : null,
+      h('span', { class: 'slash-desc' }, item.description))),
+    hint ? h('div', { class: 'slash-hint' }, hint) : null);
 }
 
 /** Send while there is something to send; while a turn runs and the box is empty it is the stop button. */
@@ -803,7 +840,10 @@ async function loadOlder() {
     const frag = document.createDocumentFragment();
     for (const item of r.items) { const node = itemNode(item); if (node) appendNode(frag, node); }
     $('#log').prepend(frag);
-    for (const item of r.items) if (item.k === 'result') applyResult(item);
+    for (const item of r.items) {
+      if (item.k === 'result') applyResult(item);
+      else if (item.k === 'command-done') applyCommandDone(item);
+    }
     renderMore();
     wrap.scrollTop += wrap.scrollHeight - before;
   } catch (e) { toast(e.message, 'err'); }
@@ -830,6 +870,10 @@ function itemNode(item) {
     }
     case 'end':
       return item.reason === 'completed' ? h('div', { class: 'turn-end' }) : h('div', { class: 'turn-end note-line' }, item.reason === 'aborted' ? '已停止' : `回合结束：${item.reason}`);
+    case 'command':
+      return h('div', { class: 'cmd', 'data-cmd': item.commandId },
+        h('div', { class: 'cmd-line' }, h('span', { class: 'tool-state' }), h('b', {}, `/${item.name}`), item.args ? h('span', { class: 'tool-sum' }, item.args) : null),
+        h('div', { class: 'cmd-out' }));
     default:
       return null;
   }
@@ -847,6 +891,13 @@ function applyResult(item) {
     node.dataset.pics = '1';
     (group ?? node).after(picsNode(item.pics));
   }
+}
+
+function applyCommandDone(item) {
+  const node = $(`.cmd[data-cmd="${CSS.escape(item.commandId ?? '')}"]`);
+  if (!node) return;
+  node.classList.add(item.error ? 'err' : 'done');
+  $('.cmd-out', node).textContent = item.text || (item.error ? '失败' : '');
 }
 
 /** Consecutive tool calls fold into one row: "4 个步骤 · <latest>", opened on tap. */
@@ -881,6 +932,7 @@ function addItem(item, live) {
   if (item.seq) app.session.lastSeq = Math.max(app.session.lastSeq ?? 0, item.seq);
   log.querySelector(':scope > .spinner')?.remove();
   if (item.k === 'result') { applyResult(item); return; }
+  if (item.k === 'command-done') { applyCommandDone(item); return; }
   if (item.k === 'assistant') app.session.lastReply = item.text;
   if (item.k === 'assistant' && live) { app.session.live = ''; renderLive(); }
   const near = isNearBottom();
@@ -919,6 +971,7 @@ async function sendMessage() {
   renderDrafts();
   if (send) send.disabled = true;
   input.value = ''; input.style.height = 'auto';
+  renderSlash();
   vibrate();
   try {
     // Uploaded on every attempt: the desktop keeps an upload only until the prompt that names it.
@@ -929,13 +982,21 @@ async function sendMessage() {
       uploads.push(await uploadImage(d.blob, d.name, (sent) => { if (send) send.dataset.progress = `${Math.round(((before + sent) / total) * 100)}%`; }));
       before += d.blob.size;
     }
-    await app.link.rpc('session.prompt', { sessionId: s.id, text, uploads, mode: 'queue', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, 90_000);
+    const r = await app.link.rpc('session.prompt', { sessionId: s.id, text, uploads, mode: 'queue', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, 150_000);
     s.sending = false;
+    // A slash command ran on the desktop; its row in the log shows the result. Like DSH's
+    // composer, a failed command keeps its text for correction.
+    if (r?.command) {
+      if (r.command.kind === 'error') throw new Error(r.command.text || `${text.split(/\s/)[0]} 失败`);
+      clearDrafts(); scrollBottom();
+      return;
+    }
     clearDrafts();
     s.running = true; renderSessionChrome(); renderLive(); scrollBottom();
   } catch (e) {
     s.sending = false;
     input.value = text;
+    fitComposer();
     renderDrafts();
     toast(e.message, 'err');
   } finally {

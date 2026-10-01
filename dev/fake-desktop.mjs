@@ -85,6 +85,35 @@ function runTurn(content) {
     if (next) { add({ type: 'agent/inbox/spliced', data: { target: 'next-turn' } }); setTimeout(() => runTurn(next.content), 300); }
   }, 800);
 }
+// DSH's command registry and agent lookup (`ctx.commands`, `ctx.typert`), with the global commands a
+// phone may and may not run, and a skill catalog for the "/" menu.
+const agentS1 = { id: 's1', session };
+const commandDefs = [
+  { name: 'compact', description: '压缩上下文' },
+  { name: 'goal', description: '设置会话目标', input: { hint: '<目标>' } },
+  { name: 'danger-full-access', description: '切换到完全访问' },
+];
+let commandSeq = 0;
+const fakeServices = {
+  attachments: globalThis.fakeAttachments,
+  commands: {
+    list: (agent) => (agent === agentS1 ? commandDefs : []),
+    find: (agent, name) => (agent === agentS1 ? commandDefs.find((c) => c.name === name) : undefined),
+    async execute(agent, line) {
+      const [, name, args] = /^\/([a-z0-9_-]+)\s*(.*)$/s.exec(line) ?? [];
+      if (!commandDefs.some((c) => c.name === name)) return undefined;
+      const commandId = `cmd-${++commandSeq}`;
+      add({ type: 'command/run', data: { commandId, name, args, source: { kind: 'user' } } });
+      await new Promise((r) => setTimeout(r, 600));
+      const result = name === 'goal' && !args.trim() ? { kind: 'error', text: '/goal 需要一个目标' } : { kind: 'success', text: name === 'compact' ? '已压缩：82K → 12K tokens' : `目标：${args}` };
+      add({ type: 'command/done', data: { commandId, kind: result.kind, text: result.text } });
+      return { commandId, result };
+    },
+  },
+  typert: { lookups: { get: (key) => (key === 'agent' ? { resolve: async (id) => (id === 's1' ? agentS1 : undefined) } : undefined) } },
+  sessionSkillCatalog: { list: async () => ({ skills: [{ name: 'code-review', description: '评审当前改动' }, { name: 'commit', description: '整理并提交' }] }) },
+};
+
 const projectionValues = () => ({
   modelSelection: { lastUsed: null, next: model }, inbox, sessionStats: stats, tokenUsage: usage,
   contextPressure: { contextWindow: 200000, pressureTokens: 78000, projectedTokens: 82000 },
@@ -149,7 +178,7 @@ const ctx = {
   agents: { roots: () => [{ session }], list: () => [{ session }], get: (id) => (id === 's1' ? { session } : undefined) },
   permissionPresets: { current: (s) => presets.get(s.id), set: (s, n) => presets.set(s.id, n), resolve: (n) => ({ name: n }) },
   workspaceRegistry: { list: () => [{ id: 'w1', path: '/Users/me/proj', title: 'proj' }, { id: 'w2', path: '/Users/me/notes', title: 'notes' }] },
-  get: (name) => (name === 'attachments' ? globalThis.fakeAttachments : undefined),
+  get: (name) => fakeServices[name],
 };
 
 apply(ctx, { relayUrl: RELAY, dataDir: process.env.DATA ?? await mkdtemp(join(tmpdir(), 'dsh-pair-fake-')) });
