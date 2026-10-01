@@ -15,6 +15,7 @@ function fakeCtx() {
   const routes = new Map();
   const disposers = [];
   const prompts = [];
+  const selections = [];
   const presets = new Map([['s1', 'danger-full-access']]);
   const session = { id: 's1', header: () => ({}) };
   let followPush;
@@ -50,6 +51,12 @@ function fakeCtx() {
       cancel() { return {}; },
       async create() { return { sessionId: 's2' }; },
       async page() { return { records: [], hasMore: false }; },
+      async modelCatalog() {
+        return { default: { provider: 'claude', model: 'opus' }, routableProviders: ['claude'], failures: [], groups: [
+          { id: 'claude', name: 'Claude', models: [{ id: 'opus', name: 'Opus 5.5', description: 'x', reasoning: { efforts: [{ id: 'high', name: 'High', description: 'y' }], defaultEffort: 'high' } }, { id: 'haiku', name: 'Haiku' }] },
+        ] };
+      },
+      async selectModel(req) { selections.push(req); return { selected: { provider: req.provider, model: req.model, reasoningEffort: req.reasoningEffort } }; },
     },
     agents: { roots: () => [{ session }], list: () => [{ session }], get: (id) => (id === 's1' ? { session } : undefined) },
     permissionPresets: { current: (s) => presets.get(s.id), set: (s, name) => presets.set(s.id, name), resolve: (n) => ({ name: n }) },
@@ -61,7 +68,7 @@ function fakeCtx() {
       },
     } : undefined),
   };
-  return { ctx, routes, disposers, prompts, presets, followPush: (f) => followPush(f) };
+  return { ctx, routes, disposers, prompts, selections, presets, followPush: (f) => followPush(f) };
 }
 
 function phoneSocket(url) {
@@ -117,6 +124,16 @@ test('pair, browse, prompt, live stream, away approval — through the real rela
   assert.deepEqual(watched.items.map((i) => i.k), ['user', 'assistant', 'tool']);
   assert.equal(watched.items[1].text, '**嗨**');
   assert.equal(watched.items[2].summary, 'List files');
+
+  // --- model picker: the catalog in a compact shape, and switching the session's model
+  const models = await rpc('models.list');
+  assert.deepEqual(models.default, { provider: 'claude', model: 'opus' });
+  assert.deepEqual(models.groups[0].models[0], { id: 'opus', name: 'Opus 5.5', efforts: [{ id: 'high', name: 'High' }], defaultEffort: 'high' });
+  assert.deepEqual(models.groups[0].models[1], { id: 'haiku', name: 'Haiku', efforts: [], defaultEffort: null });
+  const switched = await rpc('session.model', { sessionId: 's1', provider: 'claude', model: 'haiku' });
+  assert.deepEqual(f.selections, [{ sessionId: 's1', provider: 'claude', model: 'haiku' }]);
+  assert.equal(switched.model.model, 'haiku');
+  await assert.rejects(rpc('session.model', { sessionId: 's1' }), /请选择模型/);
 
   f.followPush({ type: 'assistant-stream', frame: { type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 2 } });
   f.followPush({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: 'a1', revision: 1, index: 0, time: 1, chunk: { type: 'text-delta', index: 0, text: '正在' } } });

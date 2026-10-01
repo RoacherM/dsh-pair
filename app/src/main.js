@@ -152,6 +152,9 @@ const ICON = {
   scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3M7 12h10"/></svg>',
   bell: '<svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0"/></svg>',
   image: '<svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M20.5 16l-5-5-8.5 8.5"/></svg>',
+  dots: '<svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18" cy="12" r="1.3" fill="currentColor"/></svg>',
+  copy: '<svg viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 00-2-2h-7a2 2 0 00-2 2v7a2 2 0 002 2h2"/></svg>',
+  share: '<svg viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4M6 12v6a2 2 0 002 2h8a2 2 0 002-2v-6"/></svg>',
 };
 
 // ------------------------------------------------------------------ sending images --
@@ -220,6 +223,7 @@ function renderDrafts() {
   fill(el, drafts.map((d, i) => h('div', { class: 'draft' },
     h('img', { src: d.url, alt: '待发送的图片' }),
     app.session.sending ? null : h('button', { class: 'draft-x', 'aria-label': '移除', onClick: () => { URL.revokeObjectURL(d.url); drafts.splice(i, 1); renderDrafts(); } }, icon('x')))));
+  renderSendState();
 }
 const icon = (name) => h('span', { class: 'ico', html: ICON[name] });
 
@@ -328,6 +332,9 @@ function onEvent(msg) {
       if (app.session?.id === msg.sessionId) { app.session.title = msg.title; renderSessionChrome(); }
       break;
     }
+    case 'model':
+      if (app.session?.id === msg.sessionId) { app.session.model = msg.model; renderSessionChrome(); }
+      break;
     case 'session-error':
       if (app.session?.id === msg.sessionId) toast(`出错：${msg.message}`, 'err');
       break;
@@ -547,7 +554,8 @@ async function openSession(id, { silent = false } = {}) {
   try {
     const r = await app.link.rpc('session.watch', { sessionId: id });
     if (app.session?.id !== id) return;
-    Object.assign(app.session, { title: r.title ?? app.session.title, cwd: r.cwd, hasMore: r.hasMore, firstSeq: r.firstSeq, live: r.live, loading: false, items: [], tools: new Map() });
+    Object.assign(app.session, { title: r.title ?? app.session.title, cwd: r.cwd, model: r.model ?? null, hasMore: r.hasMore, firstSeq: r.firstSeq, live: r.live, loading: false, items: [], tools: new Map() });
+    loadModels();
     $('#log') && fill($('#log'));
     for (const item of r.items) addItem(item, false);
     renderSessionChrome(); renderLive(); renderMore();
@@ -559,14 +567,20 @@ async function openSession(id, { silent = false } = {}) {
   }
 }
 
+function leaveSession() {
+  app.link?.rpc('session.unwatch').catch(() => {});
+  clearDrafts();
+  app.session = null; app.view = { name: 'home' }; render(); refreshSessions();
+}
+
 function renderSession() {
   const s = app.session;
-  const input = h('textarea', { id: 'composer', rows: 1, placeholder: '发消息…', onInput: (e) => { e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`; } });
+  const input = h('textarea', { id: 'composer', rows: 1, placeholder: '发消息…', onInput: (e) => { e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`; renderSendState(); } });
   return h('main', { class: 'screen session' },
-    h('header', { class: 'bar' },
-      h('button', { class: 'icon-btn', 'aria-label': '返回', onClick: () => { app.link?.rpc('session.unwatch').catch(() => {}); app.session = null; app.view = { name: 'home' }; render(); refreshSessions(); } }, icon('back')),
-      h('div', { class: 'bar-title', id: 'stitle' }),
-      h('button', { class: 'icon-btn stop', id: 'stop', 'aria-label': '停止', hidden: !s?.running, onClick: stopSession }, icon('stop'))),
+    h('header', { class: 'bar sbar' },
+      h('button', { class: 'round-btn', 'aria-label': '返回', onClick: leaveSession }, icon('back')),
+      h('div', { class: 'bar-center', id: 'stitle' }),
+      h('button', { class: 'round-btn', 'aria-label': '更多', onClick: openSessionMenu }, icon('dots'))),
     h('div', { class: 'banner', id: 'offline', hidden: app.link?.status !== 'offline' }, '电脑离线，恢复后自动重连。'),
     h('div', { class: 'log-wrap', id: 'logwrap' },
       h('div', { id: 'more' }),
@@ -574,32 +588,150 @@ function renderSession() {
       h('div', { id: 'live' })),
     h('div', { id: 'pending', class: 'pending-inline' }),
     h('footer', { class: 'composer' },
-      h('div', { class: 'mode', id: 'mode' }),
-      h('div', { class: 'drafts', id: 'drafts' }),
-      h('div', { class: 'composer-row' },
-        h('label', { class: 'attach', 'aria-label': '添加图片' }, icon('image'),
-          h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onChange: (e) => { addDraftImages([...e.target.files]); e.target.value = ''; } })),
+      h('div', { class: 'composer-card' },
+        h('div', { class: 'drafts', id: 'drafts' }),
         input,
-        h('button', { class: 'send', id: 'send', 'aria-label': '发送', onClick: sendMessage }, icon('send')))));
+        h('div', { class: 'composer-bar' },
+          h('label', { class: 'round-btn sm', 'aria-label': '添加图片' }, icon('plus'),
+            h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onChange: (e) => { addDraftImages([...e.target.files]); e.target.value = ''; } })),
+          h('button', { class: 'pill', id: 'model', hidden: true, onClick: openModelPicker }),
+          h('button', { class: 'pill', id: 'mode', hidden: true, onClick: () => { app.sendMode = app.sendMode === 'steer' ? 'queue' : 'steer'; renderSessionChrome(); } }),
+          h('span', { class: 'grow' }),
+          h('button', { class: 'send', id: 'send', 'aria-label': '发送', onClick: () => ($('#send')?.dataset.stop ? stopSession() : sendMessage()) }, icon('send'))))));
+}
+
+/** Send while there is something to send; while a turn runs and the box is empty it is the stop button. */
+function renderSendState() {
+  const s = app.session;
+  const send = $('#send');
+  if (!s || !send) return;
+  const has = Boolean($('#composer')?.value.trim()) || (s.drafts?.length ?? 0) > 0;
+  const stop = s.running && !has && !s.sending;
+  if (stop) send.dataset.stop = '1'; else delete send.dataset.stop;
+  send.setAttribute('aria-label', stop ? '停止' : '发送');
+  fill(send, icon(stop ? 'stop' : 'send'));
+  send.disabled = !stop && (!has || Boolean(s.sending));
 }
 
 function renderSessionChrome() {
   const s = app.session;
   const t = $('#stitle');
   if (!s || !t) return;
-  fill(t, h('b', {}, s.title || '会话'), h('span', { class: 'status' }, h('span', { class: `dot ${s.running ? 'busy' : 'ok'}` }), s.running ? '运行中' : base(s.cwd) || '空闲'));
-  const stop = $('#stop'); if (stop) stop.hidden = !s.running;
+  fill(t, h('b', {}, s.title || '会话'), h('span', { class: 'status' }, s.running ? h('span', { class: 'dot busy' }) : null, s.running ? '运行中' : base(s.cwd) || '空闲'));
   const mode = $('#mode');
   if (mode) {
     app.sendMode ??= 'queue';
-    fill(mode, ...(s.running ? [
-      h('button', { class: `seg ${app.sendMode === 'queue' ? 'on' : ''}`, onClick: () => { app.sendMode = 'queue'; renderSessionChrome(); } }, '本轮结束后发送'),
-      h('button', { class: `seg ${app.sendMode === 'steer' ? 'on' : ''}`, onClick: () => { app.sendMode = 'steer'; renderSessionChrome(); } }, '立即插话'),
-    ] : []));
+    mode.hidden = !s.running;
+    fill(mode, app.sendMode === 'steer' ? '插话' : '排队');
+    mode.setAttribute('aria-label', app.sendMode === 'steer' ? '立即插话（点按切换）' : '本轮结束后发送（点按切换）');
   }
+  const model = $('#model');
+  if (model) {
+    const label = modelLabel(s.model ?? app.models?.default);
+    model.hidden = !label || app.modelsFailed;
+    if (label) fill(model, h('span', {}, label.name), label.effort ? h('small', {}, ` ${label.effort}`) : null);
+  }
+  renderSendState();
   renderPending();
   const pend = $('#pending');
   if (pend) for (const card of [...pend.children]) card.hidden = false;
+}
+
+// ---- sheets, models, copying
+function openSheet(title, build) {
+  const close = () => { bg.classList.remove('show'); setTimeout(() => bg.remove(), 220); };
+  const bg = h('div', { class: 'sheet-bg', onClick: (e) => { if (e.target === bg) close(); } },
+    h('div', { class: 'sheet' }, h('div', { class: 'sheet-grab' }), title ? h('div', { class: 'sheet-title' }, title) : null, build(close)));
+  document.body.append(bg);
+  requestAnimationFrame(() => bg.classList.add('show'));
+}
+
+function openSessionMenu() {
+  const s = app.session;
+  if (!s) return;
+  const lastReply = s.lastReply;
+  const item = (label, fn, cls = '') => h('button', { class: `sheet-item ${cls}`, onClick: fn }, label);
+  openSheet(s.title || '会话', (close) => h('div', { class: 'sheet-list' },
+    s.running ? item('停止运行', () => { close(); stopSession(); }, 'danger') : null,
+    lastReply ? item('复制最后一条回复', () => { close(); copyText(lastReply); }) : null,
+    item('刷新会话', () => { close(); openSession(s.id, { silent: true }); }),
+    item('设置', () => { close(); app.view = { name: 'settings' }; render(); })));
+}
+
+async function loadModels() {
+  if (app.models || app.modelsFailed || app.modelsLoading) return;
+  app.modelsLoading = true;
+  try { app.models = await app.link.rpc('models.list'); }
+  catch { app.modelsFailed = true; } // an older desktop plugin has no model picker
+  finally { app.modelsLoading = false; renderSessionChrome(); }
+}
+
+/** {name, effort} for a selection {provider, model, reasoningEffort}, from the desktop's catalog. */
+function modelLabel(sel) {
+  if (!sel?.model) return null;
+  const model = app.models?.groups?.find((g) => g.id === sel.provider)?.models.find((m) => m.id === sel.model)
+    ?? app.models?.groups?.flatMap((g) => g.models).find((m) => m.id === sel.model);
+  const effortId = sel.reasoningEffort ?? model?.defaultEffort;
+  const effort = model?.efforts?.find((e) => e.id === effortId)?.name ?? effortId ?? '';
+  return { name: model?.name ?? sel.model, effort };
+}
+
+function openModelPicker() {
+  const s = app.session;
+  if (!s || !app.models) return;
+  const cur = s.model ?? app.models.default ?? {};
+  const choose = async (close, provider, model, reasoningEffort) => {
+    close();
+    try {
+      const r = await app.link.rpc('session.model', { sessionId: s.id, provider, model, reasoningEffort });
+      if (app.session === s) { s.model = r.model; renderSessionChrome(); }
+      vibrate();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  openSheet('模型', (close) => h('div', { class: 'sheet-list models' }, app.models.groups.map((g) => [
+    h('div', { class: 'sheet-group' }, g.name),
+    g.models.map((m) => {
+      const on = cur.provider === g.id && cur.model === m.id;
+      const curEffort = cur.reasoningEffort ?? m.defaultEffort;
+      return h('div', { class: `model-row ${on ? 'on' : ''}` },
+        h('button', { class: 'model-name', onClick: () => choose(close, g.id, m.id, on ? cur.reasoningEffort : undefined) },
+          h('span', {}, m.name), on ? icon('check') : null),
+        m.efforts.length ? h('div', { class: 'efforts' }, m.efforts.map((e) => h('button', {
+          class: `effort ${on && curEffort === e.id ? 'on' : ''}`, onClick: () => choose(close, g.id, m.id, e.id),
+        }, e.name))) : null);
+    }),
+  ])));
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const area = h('textarea', { style: { position: 'fixed', opacity: '0' } });
+    area.value = text; document.body.append(area); area.select();
+    try { document.execCommand('copy'); } finally { area.remove(); }
+  }
+  vibrate(); toast('已复制', 'ok');
+}
+
+function onLongPress(el, fn) {
+  let timer;
+  const cancel = () => clearTimeout(timer);
+  el.addEventListener('touchstart', () => { timer = setTimeout(fn, 480); }, { passive: true });
+  for (const ev of ['touchend', 'touchmove', 'touchcancel']) el.addEventListener(ev, cancel, { passive: true });
+  el.addEventListener('contextmenu', (e) => { e.preventDefault(); fn(); });
+}
+
+/** A rendered reply: copy buttons on its code blocks, and a row of actions under it. */
+function replyNode(text) {
+  const body = h('div', { class: 'md', html: md(text) });
+  for (const pre of body.querySelectorAll('pre')) {
+    const wrap = h('div', { class: 'codewrap' });
+    pre.replaceWith(wrap);
+    wrap.append(pre, h('button', { class: 'code-copy', 'aria-label': '复制代码', onClick: () => copyText(pre.innerText) }, icon('copy')));
+  }
+  const share = navigator.share ? h('button', { class: 'act-btn', 'aria-label': '分享', onClick: () => navigator.share({ text }).catch(() => {}) }, icon('share')) : null;
+  return h('div', { class: 'msg assistant' }, body,
+    h('div', { class: 'msg-actions' }, h('button', { class: 'act-btn', 'aria-label': '复制', onClick: () => copyText(text) }, icon('copy')), share));
 }
 
 function renderMore() {
@@ -628,12 +760,15 @@ async function loadOlder() {
 function itemNode(item) {
   const s = app.session;
   switch (item.k) {
-    case 'user':
-      return h('div', { class: 'msg user' }, h('div', { class: 'bubble' }, item.text,
-        item.pics?.length ? picsNode(item.pics) : item.images ? h('span', { class: 'muted small' }, ` [${item.images} 张图片]`) : null),
+    case 'user': {
+      const bubble = h('div', { class: 'bubble' }, item.text,
+        item.pics?.length ? picsNode(item.pics) : item.images ? h('span', { class: 'muted small' }, ` [${item.images} 张图片]`) : null);
+      if (item.text) onLongPress(bubble, () => copyText(item.text)); // long press copies your message
+      return h('div', { class: 'msg user' }, bubble,
         item.source && item.source !== 'user' ? h('div', { class: 'src' }, item.source === 'schedule' ? '定时任务' : item.source) : null);
+    }
     case 'assistant':
-      return h('div', { class: 'msg assistant md', html: md(item.text) });
+      return replyNode(item.text);
     case 'tool': {
       const node = h('details', { class: 'tool', 'data-call': item.callId },
         h('summary', {}, h('span', { class: 'tool-state' }), h('b', {}, item.name), h('span', { class: 'tool-sum' }, item.summary)),
@@ -667,6 +802,7 @@ function addItem(item, live) {
   if (item.seq) app.session.lastSeq = Math.max(app.session.lastSeq ?? 0, item.seq);
   log.querySelector(':scope > .spinner')?.remove();
   if (item.k === 'result') { applyResult(item); return; }
+  if (item.k === 'assistant') app.session.lastReply = item.text;
   if (item.k === 'assistant' && live) { app.session.live = ''; renderLive(); }
   const near = isNearBottom();
   const node = itemNode(item);
@@ -724,7 +860,8 @@ async function sendMessage() {
     renderDrafts();
     toast(e.message, 'err');
   } finally {
-    if (send) { send.disabled = false; delete send.dataset.progress; }
+    if (send) delete send.dataset.progress;
+    renderSendState();
   }
 }
 

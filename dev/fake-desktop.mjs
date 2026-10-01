@@ -51,6 +51,7 @@ const sessions = [
   { sessionId: 's2', title: '写周报', cwd: '/Users/me/notes', running: false, updatedAt: Date.now() - 86400000 },
 ];
 const presets = new Map([['s1', 'danger-full-access']]);
+let model = { provider: 'claude', model: 'claude-opus-5-5', reasoningEffort: 'high' };
 const session = { id: 's1', header: () => ({}) };
 const push = (frame) => { for (const f of followers) f(frame); };
 const emit = (name, ...args) => { for (const fn of listeners.get(name) ?? []) fn(...args); };
@@ -65,7 +66,7 @@ const ctx = {
     async list() { return { items: sessions.map((s) => ({ ...s, blank: false, agentAvailable: true, projections: { values: { title: s.title } } })) }; },
     async follow(req, signal) {
       const id = req.address.sessionId;
-      const queue = [{ type: 'snapshot', header: { cwd: '/Users/me/proj' }, cursor: seq, hasMore: false, projections: { values: { title: sessions.find((s) => s.sessionId === id)?.title } }, records: id === 's1' ? records : [] }];
+      const queue = [{ type: 'snapshot', header: { cwd: '/Users/me/proj' }, cursor: seq, hasMore: false, projections: { values: { title: sessions.find((s) => s.sessionId === id)?.title, modelSelection: { lastUsed: null, next: model } } }, records: id === 's1' ? records : [] }];
       let wake;
       const fn = (frame) => { if (id === 's1') { queue.push(frame); wake?.(); } };
       followers.add(fn);
@@ -95,6 +96,23 @@ const ctx = {
       return { accepted: true };
     },
     cancel() { return {}; },
+    async modelCatalog() {
+      const efforts = [{ id: 'low', name: 'Low' }, { id: 'medium', name: 'Medium' }, { id: 'high', name: 'High' }];
+      return { default: { provider: 'claude', model: 'claude-opus-5-5' }, groups: [
+        { id: 'claude', name: 'Claude', models: [
+          { id: 'claude-opus-5-5', name: 'Opus 5.5', reasoning: { efforts, defaultEffort: 'high' } },
+          { id: 'claude-sonnet-5', name: 'Sonnet 5', reasoning: { efforts, defaultEffort: 'medium' } },
+        ] },
+        { id: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-chat', name: 'DeepSeek V4' }] },
+      ] };
+    },
+    async projections() { return { asOfSeq: seq, values: { modelSelection: { lastUsed: null, next: model } } }; },
+    async selectModel(req) {
+      model = { provider: req.provider, model: req.model, ...(req.reasoningEffort ? { reasoningEffort: req.reasoningEffort } : {}) };
+      const event = { type: 'model/selection', seq: ++seq, time: Date.now(), data: model };
+      records.push({ type: 'event', event }); push({ type: 'event', event });
+      return { selected: model };
+    },
     async create() { return { sessionId: 's1' }; },
     async page() { return { records: [], hasMore: false }; },
   },

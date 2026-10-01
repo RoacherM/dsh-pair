@@ -14780,6 +14780,34 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
     }
     return titles.get(sessionId) ?? void 0;
   }
+  let catalog = null;
+  async function modelCatalog() {
+    if (catalog && Date.now() - catalog.at < 6e4) return catalog.value;
+    const raw = await ctx.sessionController.modelCatalog();
+    const value = {
+      default: raw?.default ?? null,
+      groups: (raw?.groups ?? []).map((group) => ({
+        id: group.id,
+        name: group.name,
+        models: (group.models ?? []).map((model) => ({
+          id: model.id,
+          name: model.name,
+          efforts: (model.reasoning?.efforts ?? []).map((effort) => ({ id: effort.id, name: effort.name })),
+          defaultEffort: model.reasoning?.defaultEffort ?? null
+        }))
+      }))
+    };
+    catalog = { at: Date.now(), value };
+    return value;
+  }
+  async function modelOf(sessionId) {
+    try {
+      const baseline = await ctx.sessionController.projections({ sessionId }, AbortSignal.timeout(1e4));
+      return baseline?.values?.modelSelection?.next ?? null;
+    } catch {
+      return null;
+    }
+  }
   function workspaces() {
     return (ctx.workspaceRegistry.list?.() ?? []).map((space) => ({ id: space.id, path: space.path, title: space.title ?? space.name ?? space.path?.split("/").pop() }));
   }
@@ -14903,6 +14931,14 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
       }, AbortSignal.timeout(6e4));
       return { accepted: true };
     },
+    "models.list": () => modelCatalog(),
+    "session.model": async (peer, p) => {
+      const selection = { provider: String(p.provider ?? ""), model: String(p.model ?? "") };
+      if (!selection.provider || !selection.model) throw new Error("\u8BF7\u9009\u62E9\u6A21\u578B");
+      if (p.reasoningEffort) selection.reasoningEffort = String(p.reasoningEffort);
+      const { selected } = await ctx.sessionController.selectModel({ sessionId: String(p.sessionId), ...selection });
+      return { model: selected };
+    },
     "upload.put": (peer, p) => peer.uploads.put(p),
     "upload.drop": (peer, p) => {
       peer.uploads.drop(p.id);
@@ -14989,7 +15025,8 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
       firstSeq: snapshot.records?.[0]?.event?.seq ?? null,
       live: w.live,
       todos: values.todos ?? null,
-      preset: values.permissions?.currentValue ?? null
+      preset: values.permissions?.currentValue ?? null,
+      model: values.modelSelection?.next ?? null
     };
   }
   function flushLive(peer, w) {
@@ -15011,6 +15048,11 @@ function createPhones({ ctx, state, pairing, away, push, images, link: getLink, 
           if (frame.event.type === "session/title" && typeof frame.event.data?.title === "string") {
             titles.set(w.sessionId, frame.event.data.title);
             event(peer, "title", { sessionId: w.sessionId, title: frame.event.data.title });
+          }
+          if (frame.event.type === "model/selection") {
+            modelOf(w.sessionId).then((model) => {
+              if (peer.watch === w) event(peer, "model", { sessionId: w.sessionId, model });
+            });
           }
           const item = projectEvent(frame.event);
           if (item) {
