@@ -15151,11 +15151,17 @@ function createPhones({ ctx, state, pairing, away, push, images, commands, link:
     w.live = snapshot.activeAttempt ? streamText(snapshot.activeAttempt.stream) : "";
     w.attemptId = snapshot.activeAttempt?.attemptId;
     pump(peer, w, iterator);
+    let running;
+    try {
+      running = (await listSessions()).find((s) => s.id === sessionId)?.running;
+    } catch {
+    }
     return {
       sessionId,
       title: values.title ?? null,
       cwd: snapshot.header?.cwd ?? null,
       items,
+      running,
       hasMore: snapshot.hasMore ?? false,
       firstSeq: snapshot.records?.[0]?.event?.seq ?? null,
       live: w.live,

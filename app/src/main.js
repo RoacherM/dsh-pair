@@ -422,6 +422,13 @@ async function refreshSessions() {
   try {
     const r = await app.link.rpc('sessions.list');
     app.sessions = r.sessions; app.workspaces = r.workspaces;
+    // Status events sent while the phone slept are lost: the list says what runs now.
+    const listed = app.session && r.sessions.find((x) => x.id === app.session.id);
+    if (listed && listed.running !== app.session.running) {
+      app.session.running = listed.running;
+      if (!listed.running) app.session.live = '';
+      renderSessionChrome(); renderLive();
+    }
   } catch (e) { toast(e.message, 'err'); }
   renderHomeList();
   if (app.view.name === 'new') renderWorkspaceChip();
@@ -831,7 +838,9 @@ async function openSession(id, { silent = false } = {}) {
   try {
     const r = await app.link.rpc('session.watch', { sessionId: id });
     if (app.session?.id !== id) return;
-    Object.assign(app.session, { title: r.title ?? app.session.title, cwd: r.cwd, model: r.model ?? null, stats: r.stats ?? null, tokens: r.tokens ?? null, queue: r.queue ?? [], hasMore: r.hasMore, firstSeq: r.firstSeq, live: r.live, loading: false, items: [], tools: new Map() });
+    // The desktop says whether a turn runs now; an older one does not, then the fresh list does.
+    const running = typeof r.running === 'boolean' ? r.running : app.sessions.find((x) => x.id === id)?.running ?? app.session.running;
+    Object.assign(app.session, { running, title: r.title ?? app.session.title, cwd: r.cwd, model: r.model ?? null, stats: r.stats ?? null, tokens: r.tokens ?? null, queue: r.queue ?? [], hasMore: r.hasMore, firstSeq: r.firstSeq, live: r.live, loading: false, items: [], tools: new Map() });
     loadModels();
     $('#log') && fill($('#log'));
     for (const item of r.items) addItem(item, false);
@@ -1104,21 +1113,63 @@ function openModelPicker() {
 }
 
 async function copyText(text) {
+  let ok = true;
   try { await navigator.clipboard.writeText(text); }
-  catch {
-    const area = h('textarea', { style: { position: 'fixed', opacity: '0' } });
-    area.value = text; document.body.append(area); area.select();
-    try { document.execCommand('copy'); } finally { area.remove(); }
-  }
-  vibrate(); toast('已复制', 'ok');
+  catch { ok = legacyCopy(text); }
+  if (ok) { vibrate(); toast('已复制', 'ok'); } else toast('复制失败', 'err');
 }
 
-function onLongPress(el, fn) {
+/**
+ * execCommand copy for browsers without the clipboard API. The field is read-only and on screen, so
+ * iOS neither opens the keyboard nor scrolls to it (an off-screen field it scrolled to blanked the page).
+ */
+function legacyCopy(text) {
+  const area = h('textarea', { readonly: true, 'aria-hidden': 'true', style: { position: 'fixed', top: '0', left: '0', width: '1px', height: '1px', padding: '0', border: '0', opacity: '0', fontSize: '16px', pointerEvents: 'none' } });
+  area.value = text;
+  const log = $('#logwrap');
+  const scroll = [window.scrollX, window.scrollY, log?.scrollTop];
+  const active = document.activeElement;
+  document.body.append(area);
+  let ok = false;
+  try {
+    area.focus({ preventScroll: true });
+    area.setSelectionRange(0, text.length);
+    ok = document.execCommand('copy');
+  } catch {} finally {
+    area.remove();
+    window.getSelection()?.removeAllRanges();
+    if (active instanceof HTMLElement && active !== document.body) active.focus({ preventScroll: true });
+    window.scrollTo(scroll[0], scroll[1]);
+    if (log) log.scrollTop = scroll[2];
+  }
+  return ok;
+}
+
+/**
+ * Long press on a touch screen shows a "复制" button over `el`; tapping it copies. A copy started by
+ * the press timer itself is not a user gesture, and iOS refuses it. A mouse keeps its own menu.
+ */
+function onLongPress(el, text) {
   let timer;
   const cancel = () => clearTimeout(timer);
-  el.addEventListener('touchstart', () => { timer = setTimeout(fn, 480); }, { passive: true });
+  el.addEventListener('touchstart', () => { cancel(); timer = setTimeout(() => copyMenu(el, text), 480); }, { passive: true });
   for (const ev of ['touchend', 'touchmove', 'touchcancel']) el.addEventListener(ev, cancel, { passive: true });
-  el.addEventListener('contextmenu', (e) => { e.preventDefault(); fn(); });
+  el.addEventListener('contextmenu', (e) => { if (!enterSends()) e.preventDefault(); });
+}
+
+function copyMenu(el, text) {
+  vibrate();
+  const r = el.getBoundingClientRect();
+  const above = r.top > 70;
+  const close = () => { bg.remove(); off(); };
+  // The click that may follow lifting the pressing finger must not close the menu at once.
+  let armedAt = Infinity;
+  document.addEventListener('touchend', () => { armedAt = Date.now() + 400; }, { once: true });
+  const bg = h('div', { class: 'pop-bg', onClick: (e) => { if (e.target === bg && Date.now() > armedAt) close(); } },
+    h('div', { class: 'popover copy-pop', style: { top: above ? `${r.top - 54}px` : `${r.bottom + 8}px`, right: `${Math.max(12, innerWidth - r.right)}px` } },
+      h('button', { class: 'pop-item', onClick: () => { close(); copyText(text); } }, icon('copy'), h('span', {}, '复制'))));
+  const off = pushOverlay(close);
+  document.body.append(bg);
 }
 
 /** A rendered reply: copy buttons on its code blocks, and a row of actions under it. */
@@ -1166,7 +1217,7 @@ function itemNode(item) {
     case 'user': {
       const bubble = h('div', { class: 'bubble' }, item.text,
         item.pics?.length ? picsNode(item.pics) : item.images ? h('span', { class: 'muted small' }, ` [${item.images} 张图片]`) : null);
-      if (item.text) onLongPress(bubble, () => copyText(item.text)); // long press copies your message
+      if (item.text) onLongPress(bubble, item.text); // long press offers to copy your message
       return h('div', { class: 'msg user' }, bubble,
         item.source && item.source !== 'user' ? h('div', { class: 'src' }, item.source === 'schedule' ? '定时任务' : item.source) : null);
     }
@@ -1246,11 +1297,20 @@ function addItem(item, live) {
   if (item.k === 'command-done') { applyCommandDone(item); return; }
   if (item.k === 'assistant') app.session.lastReply = item.text;
   if (item.k === 'assistant' && live) { app.session.live = ''; renderLive(); }
+  if (item.k === 'end' && live) syncRunningSoon();
   const near = isNearBottom();
   const node = itemNode(item);
   if (node) appendNode(log, node);
   if (live && near) scrollBottom();
 }
+
+/** Ask again whether the open session runs, shortly after a turn ended (its status event may be lost). */
+let syncTimer;
+function syncRunningSoon(ms = 1500) {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => { if (app.link?.status === 'ready') refreshSessions(); }, ms);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncRunningSoon(800); });
 
 function renderLive() {
   const el = $('#live');

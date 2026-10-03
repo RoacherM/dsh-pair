@@ -1,6 +1,6 @@
 // DSH phone app service worker: app-shell cache + Web Push.
-const CACHE = 'dsh-pair-musgupzv';
-const SHELL = ['/', '/app.js?v=musgupzv', '/app.css?v=musgupzv', '/manifest.webmanifest', '/icon-180.png', '/icon-192.png'];
+const CACHE = 'dsh-pair-mut1uc2e';
+const SHELL = ['/', '/app.js?v=mut1uc2e', '/app.css?v=mut1uc2e', '/manifest.webmanifest', '/icon-180.png', '/icon-192.png'];
 
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {

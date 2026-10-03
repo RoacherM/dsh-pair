@@ -270,8 +270,11 @@ export function createPhones({ ctx, state, pairing, away, push, images, commands
     w.live = snapshot.activeAttempt ? streamText(snapshot.activeAttempt.stream) : '';
     w.attemptId = snapshot.activeAttempt?.attemptId;
     pump(peer, w, iterator);
+    // Whether a turn runs now: a phone that reconnects has missed the status events in between.
+    let running;
+    try { running = (await listSessions()).find((s) => s.id === sessionId)?.running; } catch {}
     return {
-      sessionId, title: values.title ?? null, cwd: snapshot.header?.cwd ?? null, items,
+      sessionId, title: values.title ?? null, cwd: snapshot.header?.cwd ?? null, items, running,
       hasMore: snapshot.hasMore ?? false, firstSeq: snapshot.records?.[0]?.event?.seq ?? null,
       live: w.live, todos: values.todos ?? null, preset: values.permissions?.currentValue ?? null,
       model: values.modelSelection?.next ?? null,

@@ -336,3 +336,9 @@ body.dropping::after { content: '松开即可添加图片'; position: fixed; ins
 .wide .sheet-bg.show .sheet { transform: none; opacity: 1; }
 .wide .sheet-grab { display: none; }
 .wide .sheet-title { padding-top: 6px; }
+
+/* long press on your message: one "复制" button above it */
+.copy-pop { min-width: 0; padding: 4px; border-radius: 16px; }
+.copy-pop .pop-item { padding: 9px 14px; font-size: 15px; gap: 8px; }
+.bubble { -webkit-user-select: none; user-select: none; }
+@media (hover: hover) and (pointer: fine) { .bubble { -webkit-user-select: text; user-select: text; } }
