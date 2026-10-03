@@ -205,6 +205,8 @@ export function createPhones({ ctx, state, pairing, away, push, images, commands
       if (!text && !(Array.isArray(p.uploads) && p.uploads.length)) throw new Error('第一条消息不能为空');
       const request = p.workspaceId ? { workspaceId: String(p.workspaceId) } : p.cwd ? { cwd: String(p.cwd) } : {};
       const { sessionId } = await ctx.sessionController.create(request);
+      // The model picked in the phone's new-session composer, as DSH's hero composer applies it.
+      if (p.model?.provider && p.model?.model) await methods['session.model'](peer, { sessionId, ...p.model });
       const { command } = await methods['session.prompt'](peer, { sessionId, text, uploads: p.uploads, timeZone: p.timeZone });
       return { sessionId, ...(command ? { command } : {}) };
     },

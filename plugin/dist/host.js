@@ -15082,6 +15082,7 @@ function createPhones({ ctx, state, pairing, away, push, images, commands, link:
       if (!text && !(Array.isArray(p.uploads) && p.uploads.length)) throw new Error("\u7B2C\u4E00\u6761\u6D88\u606F\u4E0D\u80FD\u4E3A\u7A7A");
       const request = p.workspaceId ? { workspaceId: String(p.workspaceId) } : p.cwd ? { cwd: String(p.cwd) } : {};
       const { sessionId } = await ctx.sessionController.create(request);
+      if (p.model?.provider && p.model?.model) await methods["session.model"](peer, { sessionId, ...p.model });
       const { command } = await methods["session.prompt"](peer, { sessionId, text, uploads: p.uploads, timeZone: p.timeZone });
       return { sessionId, ...command ? { command } : {} };
     },

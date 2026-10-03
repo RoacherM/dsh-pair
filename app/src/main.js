@@ -120,8 +120,9 @@ const picObserver = 'IntersectionObserver' in window
   : null;
 
 function openViewer(src) {
-  const close = () => viewer.remove();
+  const close = () => { viewer.remove(); off(); };
   const viewer = h('div', { class: 'viewer', onClick: close }, h('img', { src, alt: '图片' }));
+  const off = pushOverlay(close);
   document.body.append(viewer);
 }
 
@@ -156,6 +157,9 @@ const ICON = {
   image: '<svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M20.5 16l-5-5-8.5 8.5"/></svg>',
   dots: '<svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18" cy="12" r="1.3" fill="currentColor"/></svg>',
   copy: '<svg viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 00-2-2h-7a2 2 0 00-2 2v7a2 2 0 002 2h2"/></svg>',
+  folder: '<svg viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 012-2h4l2 2h7a2 2 0 012 2v7.5a2 2 0 01-2 2h-13a2 2 0 01-2-2z"/></svg>',
+  chev: '<svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M12 20h8M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>',
   share: '<svg viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4M6 12v6a2 2 0 002 2h8a2 2 0 002-2v-6"/></svg>',
 };
 
@@ -198,11 +202,16 @@ async function uploadImage(blob, name, onProgress) {
   return id;
 }
 
+/** Whoever owns the composer's images: the open session, or the draft of a new session. */
+const draftOwner = () => (app.view.name === 'new' ? app.newDraft : app.session);
+
 async function addDraftImages(files) {
-  const s = app.session;
+  const s = draftOwner();
   if (!s) return;
   s.drafts ??= [];
-  for (const file of files) {
+  const images = files.filter((file) => file.type.startsWith('image/'));
+  if (images.length < files.length) toast('只能发送图片', 'err');
+  for (const file of images) {
     if (s.drafts.length >= MAX_DRAFT_IMAGES) { toast(`一条消息最多 ${MAX_DRAFT_IMAGES} 张图片`, 'err'); break; }
     try {
       const blob = await prepareImage(file);
@@ -212,22 +221,131 @@ async function addDraftImages(files) {
   }
 }
 
-function clearDrafts() {
-  for (const d of app.session?.drafts ?? []) URL.revokeObjectURL(d.url);
-  if (app.session) app.session.drafts = [];
+function clearDrafts(owner = draftOwner()) {
+  for (const d of owner?.drafts ?? []) URL.revokeObjectURL(d.url);
+  if (owner) owner.drafts = [];
   renderDrafts();
 }
 
 function renderDrafts() {
   const el = $('#drafts');
   if (!el) return;
-  const drafts = app.session?.drafts ?? [];
+  const owner = draftOwner();
+  const drafts = owner?.drafts ?? [];
   fill(el, drafts.map((d, i) => h('div', { class: 'draft' },
-    h('img', { src: d.url, alt: '待发送的图片' }),
-    app.session.sending ? null : h('button', { class: 'draft-x', 'aria-label': '移除', onClick: () => { URL.revokeObjectURL(d.url); drafts.splice(i, 1); renderDrafts(); } }, icon('x')))));
+    h('img', { src: d.url, alt: '待发送的图片', onClick: () => openViewer(d.url) }),
+    owner.sending ? null : h('button', { class: 'draft-x', 'aria-label': '移除', onClick: () => { URL.revokeObjectURL(d.url); drafts.splice(i, 1); renderDrafts(); } }, icon('x')))));
   renderSendState();
 }
 const icon = (name) => h('span', { class: 'ico', html: ICON[name] });
+
+// ------------------------------------------------------------------ keyboard & mouse --
+// As in DSH's composer: Enter sends, Shift+Enter is a new line, Cmd/Ctrl+Enter steers while a turn
+// runs, an IME composition is never cut short, Esc twice stops the turn, and images come in by
+// paste or drop. On a touch screen without a mouse, Enter stays a new line and the button sends.
+const enterSends = () => window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+const STOP_SEQUENCE_MS = 500;
+
+/** Close functions of open viewers, sheets and menus, topmost last: Esc closes the top one. */
+const overlays = [];
+function pushOverlay(close) {
+  overlays.push(close);
+  return () => { const i = overlays.indexOf(close); if (i >= 0) overlays.splice(i, 1); };
+}
+
+/** Enter, the "/" menu keys and pasted images for one composer textarea. */
+function bindComposer(input, submit) {
+  let composing = false;
+  let composingUntil = 0;
+  input.addEventListener('compositionstart', () => { composing = true; });
+  // Safari delivers the Enter that commits a composition just after compositionend.
+  input.addEventListener('compositionend', () => { composing = false; composingUntil = Date.now() + 10; });
+  const inComposition = (e) => e.isComposing || e.keyCode === 229 || composing || Date.now() < composingUntil;
+  input.addEventListener('keydown', (e) => {
+    if (inComposition(e)) return;
+    if (slashKey(e)) { e.preventDefault(); return; }
+    if (e.key !== 'Enter') return;
+    if (e.altKey || (e.ctrlKey && e.metaKey) || (e.shiftKey && (e.ctrlKey || e.metaKey))) { e.preventDefault(); return; }
+    if (e.shiftKey) return;
+    const accelerated = e.metaKey || e.ctrlKey;
+    if (!accelerated && !enterSends()) return;
+    e.preventDefault();
+    if (!e.repeat) submit(accelerated);
+  });
+  input.addEventListener('paste', (e) => pasteImages(e));
+}
+
+/** Files on the clipboard become images of the message; text pastes as usual. */
+function pasteImages(e) {
+  const files = [...(e.clipboardData?.items ?? [])].filter((item) => item.kind === 'file').map((item) => item.getAsFile()).filter(Boolean);
+  if (!files.length) return false;
+  if (!e.clipboardData.getData('text/plain')) e.preventDefault();
+  addDraftImages(files);
+  return true;
+}
+
+/** Arrow keys, Tab/Enter and Esc in the "/" menu. @returns whether the key was the menu's. */
+function slashKey(e) {
+  const el = $('#slash');
+  const items = el ? [...el.querySelectorAll('.slash-item')] : [];
+  if (!items.length || e.metaKey || e.ctrlKey || e.altKey) return false;
+  let i = Math.max(0, items.findIndex((x) => x.classList.contains('on')));
+  switch (e.key) {
+    case 'ArrowDown':
+    case 'ArrowUp':
+      i = (i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      items.forEach((x, j) => x.classList.toggle('on', j === i));
+      items[i].scrollIntoView({ block: 'nearest' });
+      return true;
+    case 'Tab':
+    case 'Enter':
+      if (e.shiftKey) return false;
+      items[i].click();
+      return true;
+    case 'Escape':
+      el.dataset.dismissed = $('#composer')?.value ?? '';
+      renderSlash();
+      return true;
+    default:
+      return false;
+  }
+}
+
+let firstEscape = 0;
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.isComposing || e.keyCode === 229 || e.defaultPrevented) return;
+  if (overlays.length) { e.preventDefault(); overlays.at(-1)(); return; }
+  if (app.view.name !== 'session' || !app.session?.running || e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) { firstEscape = 0; return; }
+  if (Date.now() - firstEscape <= STOP_SEQUENCE_MS) { firstEscape = 0; stopSession(); return; }
+  firstEscape = Date.now();
+});
+
+// Pasting an image with the focus outside the composer (e.g. after clicking the transcript).
+document.addEventListener('paste', (e) => {
+  const input = $('#composer');
+  if (!input || e.target === input || e.target.closest?.('input, textarea, [contenteditable]')) return;
+  if (pasteImages(e)) input.focus({ preventScroll: true });
+});
+
+// Dropping images anywhere on a screen with a composer; elsewhere a drop never opens the file.
+const dragsFiles = (e) => [...(e.dataTransfer?.types ?? [])].includes('Files');
+document.addEventListener('dragover', (e) => {
+  if (!dragsFiles(e)) return;
+  e.preventDefault();
+  const ok = Boolean($('#composer'));
+  e.dataTransfer.dropEffect = ok ? 'copy' : 'none';
+  document.body.classList.toggle('dropping', ok);
+});
+document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dropping'); });
+document.addEventListener('drop', (e) => {
+  if (!dragsFiles(e)) return;
+  e.preventDefault();
+  document.body.classList.remove('dropping');
+  const input = $('#composer');
+  if (!input) return;
+  addDraftImages([...e.dataTransfer.files]);
+  input.focus({ preventScroll: true });
+});
 
 // ------------------------------------------------------------------ storage ----
 const STORE_KEY = 'dsh-pair/v1';
@@ -305,7 +423,8 @@ async function refreshSessions() {
     const r = await app.link.rpc('sessions.list');
     app.sessions = r.sessions; app.workspaces = r.workspaces;
   } catch (e) { toast(e.message, 'err'); }
-  if (app.view.name === 'home') render();
+  renderHomeList();
+  if (app.view.name === 'new') renderWorkspaceChip();
 }
 
 function onEvent(msg) {
@@ -315,7 +434,7 @@ function onEvent(msg) {
       if (s) { s.running = msg.running; s.updatedAt = Date.now(); }
       else if (msg.running) refreshSessions();
       if (app.session?.id === msg.sessionId) { app.session.running = msg.running; if (!msg.running) app.session.live = ''; renderSessionChrome(); renderLive(); }
-      if (app.view.name === 'home') renderHomeList();
+      renderHomeList();
       break;
     }
     case 'pending':
@@ -332,6 +451,7 @@ function onEvent(msg) {
     case 'title': {
       const s = app.sessions.find((x) => x.id === msg.sessionId); if (s) s.title = msg.title;
       if (app.session?.id === msg.sessionId) { app.session.title = msg.title; renderSessionChrome(); }
+      renderHomeList();
       break;
     }
     case 'stats':
@@ -350,16 +470,66 @@ function onEvent(msg) {
 }
 
 // ------------------------------------------------------------------ rendering --
+// A computer's window gets DSH's own layout: sessions on the left, the open one (or a new one) on
+// the right. A phone gets one screen at a time.
+const WIDE = window.matchMedia('(min-width: 900px)');
+WIDE.addEventListener?.('change', () => render());
+
 function render() {
   const el = root();
-  fill(el);
   const desktop = currentDesktop();
-  if (app.view.name === 'pairing') return el.append(renderPairing());
-  if (!desktop || app.view.name === 'welcome') return el.append(renderWelcome());
-  if (app.view.name === 'session') return el.append(renderSession());
-  if (app.view.name === 'settings') return el.append(renderSettings());
-  if (app.view.name === 'new') return el.append(renderNew());
-  el.append(renderHome());
+  const wide = WIDE.matches && desktop && !['pairing', 'welcome'].includes(app.view.name);
+  document.body.classList.toggle('wide', Boolean(wide));
+  if (app.view.name === 'pairing') return fill(el, renderPairing());
+  if (!desktop || app.view.name === 'welcome') return fill(el, renderWelcome());
+  if (wide) {
+    if (app.view.name === 'home') app.view = { name: 'new' }; // DSH opens on a new session
+    // The sidebar stays (and keeps its scroll position); only the main pane is rebuilt.
+    if (!$('.shell', el)) fill(el, h('div', { class: 'shell' }, renderSidebar(), h('div', { class: 'main', id: 'main' })));
+    fill($('#main'), mainView());
+    queueMicrotask(() => { renderAway(); renderHomeList(); });
+  } else {
+    fill(el, app.view.name === 'home' ? renderHome() : mainView());
+  }
+  afterRender();
+}
+
+function mainView() {
+  if (app.view.name === 'session') return renderSession();
+  if (app.view.name === 'settings') return renderSettings();
+  return renderNew();
+}
+
+/** A rebuilt composer gets its images, height and (with a mouse) the focus back. */
+function afterRender() {
+  const input = $('#composer');
+  if (!input) return;
+  queueMicrotask(() => {
+    renderDrafts(); fitComposer(); renderModelPill(); renderWorkspaceChip(); renderPending();
+    if (enterSends() && !document.activeElement?.closest?.('input, textarea')) input.focus({ preventScroll: true });
+  });
+}
+
+/** Leave the open session (stop following it, drop its unsent images). */
+function closeSession() {
+  if (!app.session) return;
+  app.link?.rpc('session.unwatch').catch(() => {});
+  clearDrafts(app.session);
+  app.session = null;
+}
+
+function goHome() { closeSession(); app.view = { name: 'home' }; render(); refreshSessions(); }
+function goSettings() { closeSession(); app.view = { name: 'settings' }; render(); }
+
+function renderSidebar() {
+  const desktop = currentDesktop();
+  return h('aside', { class: 'side' },
+    h('div', { class: 'side-head' },
+      h('div', { class: 'bar-title' }, h('b', {}, desktop?.name ?? 'DSH'), statusLine()),
+      h('button', { class: 'icon-btn', 'aria-label': '设置', title: '设置', onClick: goSettings }, icon('gear'))),
+    h('button', { class: 'side-new', onClick: () => enterNew() }, icon('edit'), h('span', {}, '新会话')),
+    h('div', { id: 'away' }),
+    h('div', { id: 'sessions', class: 'side-list' }));
 }
 
 function statusLine() {
@@ -440,12 +610,12 @@ function renderHome() {
   const screen = h('main', { class: 'screen home' },
     h('header', { class: 'bar' },
       h('div', { class: 'bar-title' }, h('b', {}, desktop?.name ?? 'DSH'), statusLine()),
-      h('button', { class: 'icon-btn', 'aria-label': '设置', onClick: () => { app.view = { name: 'settings' }; render(); } }, icon('gear'))),
+      h('button', { class: 'icon-btn', 'aria-label': '设置', onClick: goSettings }, icon('gear'))),
     h('div', { class: 'banner', id: 'offline', hidden: app.link?.status !== 'offline' }, '电脑离线或 DSH 未运行。电脑恢复后会自动重连。'),
     h('div', { id: 'away' }),
     h('div', { id: 'pending' }),
     h('div', { id: 'sessions', class: 'sessions' }),
-    h('button', { class: 'fab', 'aria-label': '新会话', onClick: () => { app.view = { name: 'new' }; render(); } }, icon('plus')));
+    h('button', { class: 'fab', 'aria-label': '新会话', onClick: () => enterNew() }, icon('plus')));
   queueMicrotask(() => { renderAway(); renderPending(); renderHomeList(); });
   return screen;
 }
@@ -509,6 +679,7 @@ async function answer(id, payload) {
 function renderHomeList() {
   const el = $('#sessions');
   if (!el) return;
+  if (document.body.classList.contains('wide')) return renderSideList(el);
   if (!app.sessions.length) {
     fill(el, h('div', { class: 'empty' }, app.link?.status === 'ready' ? '还没有会话。点右下角 + 开始一个。' : '连接后显示会话'));
     return;
@@ -523,36 +694,135 @@ function renderHomeList() {
     running.length ? h('div', { class: 'group' }, h('div', { class: 'group-head' }, '运行中'), ...running.map(row)) : null,
     h('div', { class: 'group' }, h('div', { class: 'group-head' }, '最近'), ...rest.slice(0, 60).map(row)),
   );
-  }
+}
 
-// ---- new session
+/** The sidebar's list, grouped by workspace as in DSH; each group can start a session there. */
+function renderSideList(el) {
+  if (!app.sessions.length) {
+    fill(el, h('div', { class: 'side-empty' }, app.link?.status === 'ready' ? '还没有会话' : '连接后显示会话'));
+    return;
+  }
+  const groups = new Map();
+  for (const s of app.sessions.slice(0, 120)) {
+    const key = s.cwd ?? '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+  const titleOf = (cwd) => app.workspaces.find((w) => w.path === cwd)?.title || base(cwd) || '其他';
+  fill(el, [...groups].map(([cwd, list]) => h('div', { class: 'side-group' },
+    h('div', { class: 'side-group-head' }, icon('folder'), h('span', {}, titleOf(cwd)),
+      cwd ? h('button', { class: 'side-group-new', 'aria-label': `在 ${titleOf(cwd)} 新建会话`, title: '在这个工作区新建会话', onClick: () => enterNew({ cwd }) }, icon('plus')) : null),
+    list.map((s) => h('button', {
+      class: `side-row ${app.session?.id === s.id ? 'on' : ''}`, title: s.title || '未命名会话',
+      onClick: () => { if (app.session?.id !== s.id) openSession(s.id); },
+    }, h('span', { class: 'side-row-title' }, s.title || '未命名会话'),
+    s.running ? h('span', { class: 'dot busy' }) : h('span', { class: 'side-row-time' }, ago(s.updatedAt)))))));
+}
+
+// ---- new session: DSH's empty hero — headline, the composer, the workspace chip under it.
+// The draft (text, images, model, workspace) stays while you look elsewhere, as in DSH.
+function enterNew({ cwd, from } = {}) {
+  closeSession();
+  app.newDraft ??= { drafts: [], sending: false, model: null, text: '', cwd: null };
+  if (cwd) app.newDraft.cwd = cwd;
+  app.view = { name: 'new', from };
+  render();
+}
+
+/** Workspaces to start in: DSH's registered ones, else the folders of known sessions. */
+function workspaceChoices() {
+  if (app.workspaces.length) return app.workspaces;
+  return [...new Set(app.sessions.map((s) => s.cwd).filter(Boolean))].map((p) => ({ path: p, title: base(p) }));
+}
+function selectedSpace() {
+  const spaces = workspaceChoices();
+  const want = app.newDraft?.cwd ?? app.sessions.find((s) => s.cwd)?.cwd;
+  return spaces.find((w) => w.path === want) ?? spaces[0] ?? null;
+}
+
 function renderNew() {
-  const spaces = app.workspaces.length ? app.workspaces : [...new Set(app.sessions.map((s) => s.cwd).filter(Boolean))].map((p) => ({ path: p, title: base(p) }));
-  const pre = Math.max(0, spaces.findIndex((w) => app.view.cwd && w.path === app.view.cwd));
-  const select = h('select', { class: 'input', id: 'ws' }, ...spaces.map((w, i) => h('option', { value: i, selected: i === pre }, w.title || base(w.path))));
-  const back = () => { if (app.view.from) openSession(app.view.from); else { app.view = { name: 'home' }; render(); } };
-  const text = h('textarea', { class: 'input', rows: 6, placeholder: '要让 Agent 做什么？' });
-  const go = async (btn) => {
-    const w = spaces[Number(select.value)];
-    if (!text.value.trim()) return;
-    btn.disabled = true;
-    try {
-      const r = await app.link.rpc('session.create', { workspaceId: w?.id, cwd: w?.id ? undefined : w?.path, text: text.value, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, 60_000);
-      await refreshSessions();
-      openSession(r.sessionId);
-    } catch (e) { toast(e.message, 'err'); btn.disabled = false; }
-  };
-  const btn = h('button', { class: 'btn primary block', onClick: () => go(btn) }, '开始');
-  return h('main', { class: 'screen form' },
-    h('header', { class: 'bar' }, h('button', { class: 'icon-btn', onClick: back }, icon('back')), h('div', { class: 'bar-title' }, h('b', {}, '新会话'))),
-    h('label', { class: 'field' }, h('span', {}, '工作区'), select),
-    h('label', { class: 'field' }, h('span', {}, '第一条消息'), text),
-    btn);
+  const d = app.newDraft ??= { drafts: [], sending: false, model: null, text: '', cwd: null };
+  loadModels();
+  const back = () => { if (app.view.from) openSession(app.view.from); else goHome(); };
+  return h('main', { class: 'screen new' },
+    h('header', { class: 'bar sbar narrow-only' },
+      h('button', { class: 'round-btn', 'aria-label': '返回', onClick: back }, icon('back')),
+      h('div', { class: 'bar-center' }, h('b', {}, '新会话')),
+      h('span', { class: 'round-spacer' })),
+    h('div', { class: 'banner', id: 'offline', hidden: app.link?.status !== 'offline' }, '电脑离线，恢复后自动重连。'),
+    h('div', { class: 'hero-wrap' },
+      h('div', { class: 'hero-stack' },
+        h('div', { class: 'hero-head' }, h('span', { class: 'logo sm' }, 'DSH'), h('span', {}, '探索未至之境')),
+        h('div', { id: 'pending', class: 'pending-inline' }),
+        h('div', { class: 'slash', id: 'slash' }),
+        composerCard('描述你想要构建的内容', d.text, createSession),
+        h('div', { class: 'ws-row' }, h('button', { class: 'ws-chip', id: 'wschip', 'aria-haspopup': 'menu', onClick: openWorkspaceMenu })))));
+}
+
+function renderWorkspaceChip() {
+  const chip = $('#wschip');
+  if (!chip) return;
+  const space = selectedSpace();
+  fill(chip, icon('folder'), h('span', {}, space ? space.title || base(space.path) : '选择工作区'), icon('chev'));
+  chip.title = space?.path ?? '';
+  renderSendState();
+}
+
+function openWorkspaceMenu(e) {
+  const chip = e.currentTarget;
+  const spaces = workspaceChoices();
+  if (!spaces.length) { toast('电脑上还没有工作区', 'err'); return; }
+  const cur = selectedSpace();
+  const r = chip.getBoundingClientRect();
+  const below = innerHeight - r.bottom > 260;
+  const close = () => { bg.remove(); off(); chip.setAttribute('aria-expanded', 'false'); };
+  const bg = h('div', { class: 'pop-bg', onClick: (ev) => { if (ev.target === bg) close(); } },
+    h('div', { class: 'popover ws-menu', role: 'menu', style: below ? { top: `${r.bottom + 6}px`, left: `${r.left}px`, right: 'auto' } : { top: 'auto', bottom: `${innerHeight - r.top + 6}px`, left: `${r.left}px`, right: 'auto' } },
+      spaces.map((w) => h('button', { class: 'pop-item', role: 'menuitem', title: w.path, onClick: () => {
+        close();
+        app.newDraft.cwd = w.path;
+        renderWorkspaceChip();
+        $('#composer')?.focus();
+      } }, icon('folder'), h('span', { class: 'grow' }, w.title || base(w.path)), w.path === cur?.path ? icon('check') : null))));
+  const off = pushOverlay(close);
+  chip.setAttribute('aria-expanded', 'true');
+  document.body.append(bg);
+  $('.pop-item', bg)?.focus();
+}
+
+async function createSession() {
+  const d = app.newDraft;
+  const input = $('#composer');
+  const text = input?.value.trim() ?? '';
+  if (!d || d.sending || (!text && !d.drafts.length)) return;
+  const space = selectedSpace();
+  if (!space) { toast('先选择一个工作区', 'err'); return; }
+  d.sending = true;
+  renderDrafts();
+  const send = $('#send');
+  try {
+    const uploads = await uploadDrafts(d.drafts, send);
+    const r = await app.link.rpc('session.create', {
+      workspaceId: space.id, cwd: space.id ? undefined : space.path, text, uploads,
+      model: d.model ?? undefined, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }, 150_000);
+    clearDrafts(d);
+    app.newDraft = null;
+    await refreshSessions();
+    openSession(r.sessionId);
+  } catch (e) {
+    d.sending = false;
+    renderDrafts();
+    toast(e.message, 'err');
+  } finally {
+    if (send) delete send.dataset.progress;
+  }
 }
 
 // ---- session
 async function openSession(id, { silent = false } = {}) {
   const known = app.sessions.find((s) => s.id === id);
+  if (app.session && app.session.id !== id) clearDrafts(app.session);
   if (!silent || app.session?.id !== id) {
     app.session = { id, title: known?.title ?? '', running: known?.running ?? false, items: [], tools: new Map(), live: '', loading: true, hasMore: false };
   }
@@ -574,18 +844,13 @@ async function openSession(id, { silent = false } = {}) {
   }
 }
 
-function leaveSession() {
-  app.link?.rpc('session.unwatch').catch(() => {});
-  clearDrafts();
-  app.session = null; app.view = { name: 'home' }; render(); refreshSessions();
-}
+function leaveSession() { goHome(); }
 
 function renderSession() {
   const s = app.session;
-  const input = h('textarea', { id: 'composer', rows: 1, placeholder: '发消息，/ 打开命令…', onInput: () => { fitComposer(); renderSendState(); renderSlash(); } });
   return h('main', { class: 'screen session' },
     h('header', { class: 'bar sbar' },
-      h('button', { class: 'round-btn', 'aria-label': '返回', onClick: leaveSession }, icon('back')),
+      h('button', { class: 'round-btn narrow-only', 'aria-label': '返回', onClick: leaveSession }, icon('back')),
       h('div', { class: 'bar-center', id: 'stitle' }),
       h('button', { class: 'round-btn', 'aria-label': '更多', onClick: openSessionMenu }, icon('dots'))),
     h('div', { class: 'banner', id: 'offline', hidden: app.link?.status !== 'offline' }, '电脑离线，恢复后自动重连。'),
@@ -598,15 +863,48 @@ function renderSession() {
       h('div', { class: 'queue', id: 'queue' }),
       h('div', { class: 'stats', id: 'stats' }),
       h('div', { class: 'slash', id: 'slash' }),
-      h('div', { class: 'composer-card' },
-        h('div', { class: 'drafts', id: 'drafts' }),
-        input,
-        h('div', { class: 'composer-bar' },
-          h('label', { class: 'round-btn sm', 'aria-label': '添加图片' }, icon('plus'),
-            h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onChange: (e) => { addDraftImages([...e.target.files]); e.target.value = ''; } })),
-          h('button', { class: 'pill', id: 'model', hidden: true, onClick: openModelPicker }),
-          h('span', { class: 'grow' }),
-          h('button', { class: 'send', id: 'send', 'aria-label': '发送', onClick: () => ($('#send')?.dataset.stop ? stopSession() : sendMessage()) }, icon('send'))))));
+      composerCard('发消息或创建任务，/ 调用指令', s?.text, submitMessage)));
+}
+
+/** The composer card shared by a session and a new session: images, text, model, send. */
+function composerCard(placeholder, text, submit) {
+  const input = h('textarea', {
+    id: 'composer', rows: 1, placeholder, 'data-placeholder': placeholder, 'aria-label': placeholder,
+    onInput: () => { const owner = draftOwner(); if (owner) owner.text = input.value; fitComposer(); renderSendState(); renderSlash(); },
+  });
+  input.value = text ?? '';
+  bindComposer(input, submit);
+  return h('div', { class: 'composer-card' },
+    h('div', { class: 'drafts', id: 'drafts' }),
+    input,
+    h('div', { class: 'composer-bar' },
+      h('label', { class: 'round-btn sm', 'aria-label': '添加图片', title: '添加图片（也可以粘贴或拖进来）' }, icon('plus'),
+        h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onChange: (e) => { addDraftImages([...e.target.files]); e.target.value = ''; } })),
+      h('button', { class: 'pill', id: 'model', hidden: true, title: '切换模型', onClick: openModelPicker }),
+      h('span', { class: 'grow' }),
+      h('button', { class: 'send', id: 'send', 'aria-label': '发送', onClick: () => ($('#send')?.dataset.stop ? stopSession() : submit(false)) }, icon('send'))));
+}
+
+/**
+ * Enter (or the send button) sends — queued while a turn runs, as DSH does by default.
+ * Cmd/Ctrl+Enter while a turn runs steers instead: the text into the running turn, or, with an
+ * empty composer, every queued message.
+ */
+function submitMessage(accelerated) {
+  const s = app.session;
+  if (!s) return;
+  if (accelerated && s.running) {
+    const has = Boolean($('#composer')?.value.trim()) || (s.drafts?.length ?? 0) > 0;
+    if (has) sendMessage('steer');
+    else steerQueued();
+    return;
+  }
+  sendMessage();
+}
+
+async function steerQueued() {
+  const s = app.session;
+  for (const q of (s?.queue ?? []).filter((x) => x.target !== 'next-step')) await queueAction('queue.steer', q.id);
 }
 
 function fitComposer() {
@@ -629,10 +927,11 @@ async function loadSlash(s) {
 function renderSlash() {
   const el = $('#slash');
   const input = $('#composer');
-  const s = app.session;
+  const s = app.view.name === 'session' ? app.session : null;
   if (!el || !input || !s) return;
   if (input.value.startsWith('/')) loadSlash(s);
-  const { items, hint } = slashMenu(s.slash, input.value);
+  if (el.dataset.dismissed !== undefined && el.dataset.dismissed !== input.value) delete el.dataset.dismissed;
+  const { items, hint } = el.dataset.dismissed === undefined ? slashMenu(s.slash, input.value) : { items: [], hint: null };
   // A new prefix starts the list from the top.
   if (el.dataset.query !== input.value) { el.dataset.query = input.value; el.scrollTop = 0; }
   const pick = (item) => {
@@ -641,7 +940,7 @@ function renderSlash() {
     fitComposer(); renderSendState(); renderSlash();
   };
   fill(el,
-    items.map((item) => h('button', { class: 'slash-item', onClick: () => pick(item) },
+    items.map((item, i) => h('button', { class: `slash-item ${i === 0 && enterSends() ? 'on' : ''}`, tabindex: -1, onMouseDown: (e) => e.preventDefault(), onClick: () => pick(item) },
       h('b', {}, `/${item.name}`), item.kind === 'skill' ? h('span', { class: 'tag' }, '技能') : null,
       h('span', { class: 'slash-desc' }, item.description))),
     hint ? h('div', { class: 'slash-hint' }, hint) : null);
@@ -649,15 +948,22 @@ function renderSlash() {
 
 /** Send while there is something to send; while a turn runs and the box is empty it is the stop button. */
 function renderSendState() {
-  const s = app.session;
+  const s = draftOwner();
   const send = $('#send');
-  if (!s || !send) return;
-  const has = Boolean($('#composer')?.value.trim()) || (s.drafts?.length ?? 0) > 0;
-  const stop = s.running && !has && !s.sending;
+  const input = $('#composer');
+  if (!s || !send || !input) return;
+  const isNew = app.view.name === 'new';
+  const has = Boolean(input.value.trim()) || (s.drafts?.length ?? 0) > 0;
+  const stop = !isNew && s.running && !has && !s.sending;
   if (stop) send.dataset.stop = '1'; else delete send.dataset.stop;
-  send.setAttribute('aria-label', stop ? '停止' : '发送');
+  const label = stop ? '停止（Esc 按两次）' : enterSends() ? '发送（Enter）' : '发送';
+  send.setAttribute('aria-label', label);
+  send.title = label;
   fill(send, icon(stop ? 'stop' : 'send'));
-  send.disabled = !stop && (!has || Boolean(s.sending));
+  send.disabled = !stop && (!has || Boolean(s.sending) || (isNew && !selectedSpace()));
+  // As in DSH: with messages queued and nothing typed, say how to steer them in.
+  const canSteerQueue = !isNew && s.running && !has && enterSends() && (s.queue ?? []).some((q) => q.target !== 'next-step');
+  input.placeholder = canSteerQueue ? 'Cmd/Ctrl+Enter 插话发送全部排队消息' : input.dataset.placeholder;
 }
 
 function renderSessionChrome() {
@@ -666,16 +972,20 @@ function renderSessionChrome() {
   if (!s || !t) return;
   fill(t, h('b', {}, s.title || '会话'), h('span', { class: 'status' }, s.running ? h('span', { class: 'dot busy' }) : null, s.running ? '运行中' : base(s.cwd) || '空闲'));
   renderStats(); renderQueue();
-  const model = $('#model');
-  if (model) {
-    const label = modelLabel(s.model ?? app.models?.default);
-    model.hidden = !label || app.modelsFailed;
-    if (label) fill(model, h('span', {}, label.name), label.effort ? h('small', {}, ` ${label.effort}`) : null);
-  }
+  renderModelPill();
   renderSendState();
   renderPending();
   const pend = $('#pending');
   if (pend) for (const card of [...pend.children]) card.hidden = false;
+}
+
+function renderModelPill() {
+  const model = $('#model');
+  const owner = draftOwner();
+  if (!model || !owner) return;
+  const label = modelLabel(owner.model ?? app.models?.default);
+  model.hidden = !label || Boolean(app.modelsFailed);
+  if (label) fill(model, h('span', {}, label.name), label.effort ? h('small', {}, ` ${label.effort}`) : null);
 }
 
 // ---- stats and queue (as in DSH's composer)
@@ -698,10 +1008,11 @@ function renderQueue() {
   const el = $('#queue');
   const s = app.session;
   if (!el || !s) return;
+  renderSendState();
   fill(el, (s.queue ?? []).map((q) => h('div', { class: 'qitem' },
     h('span', { class: 'qtext' }, q.text || `[${q.images} 张图片]`, q.text && q.images ? h('small', {}, ` +${q.images} 图`) : null),
     q.target === 'next-step' ? h('span', { class: 'qstate' }, '插话中')
-      : h('button', { class: 'qact', disabled: !s.running, onClick: () => queueAction('queue.steer', q.id) }, '插话'),
+      : h('button', { class: 'qact', disabled: !s.running, title: '插进正在运行的回合', onClick: () => queueAction('queue.steer', q.id) }, '插话'),
     q.target === 'next-step' ? null : h('button', { class: 'qact x', 'aria-label': '删除排队消息', onClick: () => queueAction('queue.remove', q.id) }, icon('x')))));
 }
 
@@ -714,7 +1025,8 @@ async function queueAction(method, itemId) {
 
 // ---- sheets, models, copying
 function openSheet(title, build) {
-  const close = () => { bg.classList.remove('show'); setTimeout(() => bg.remove(), 220); };
+  const close = () => { off(); bg.classList.remove('show'); setTimeout(() => bg.remove(), 220); };
+  const off = pushOverlay(close);
   const bg = h('div', { class: 'sheet-bg', onClick: (e) => { if (e.target === bg) close(); } },
     h('div', { class: 'sheet' }, h('div', { class: 'sheet-grab' }), title ? h('div', { class: 'sheet-title' }, title) : null, build(close)));
   document.body.append(bg);
@@ -725,7 +1037,8 @@ function openSheet(title, build) {
 function openSessionMenu() {
   const s = app.session;
   if (!s) return;
-  const close = () => bg.remove();
+  const close = () => { bg.remove(); off(); };
+  const off = pushOverlay(close);
   const item = (ico, label, fn, cls = '') => h('button', { class: `pop-item ${cls}`, onClick: () => { close(); fn(); } }, icon(ico), h('span', {}, label));
   const bg = h('div', { class: 'pop-bg', onClick: (e) => { if (e.target === bg) close(); } },
     h('div', { class: 'popover' },
@@ -737,13 +1050,7 @@ function openSessionMenu() {
 }
 
 /** New session in the same workspace as `s`; Back returns to `s`. */
-function newSessionFrom(s) {
-  app.link?.rpc('session.unwatch').catch(() => {});
-  clearDrafts();
-  app.session = null;
-  app.view = { name: 'new', from: s.id, cwd: s.cwd };
-  render();
-}
+function newSessionFrom(s) { enterNew({ cwd: s.cwd, from: s.id }); }
 
 /** "Claude Opus 5.5 · Claude Code" → "Opus 5.5": the pill shows the model, not its route. */
 const shortModelName = (name) => String(name).split(' · ')[0].replace(/^Claude\s+/, '');
@@ -754,7 +1061,7 @@ async function loadModels() {
   app.modelsLoading = true;
   try { app.models = await app.link.rpc('models.list'); app.modelsFailed = 0; }
   catch { app.modelsFailed = Date.now(); }
-  finally { app.modelsLoading = false; renderSessionChrome(); }
+  finally { app.modelsLoading = false; renderModelPill(); }
 }
 
 /** {name, effort} for a selection {provider, model, reasoningEffort}, from the desktop's catalog. */
@@ -768,11 +1075,13 @@ function modelLabel(sel) {
 }
 
 function openModelPicker() {
-  const s = app.session;
+  const s = draftOwner();
   if (!s || !app.models) return;
   const cur = s.model ?? app.models.default ?? {};
   const choose = async (close, provider, model, reasoningEffort) => {
     close();
+    // A new session takes its model when it is created.
+    if (s === app.newDraft) { s.model = { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) }; renderModelPill(); return; }
     try {
       const r = await app.link.rpc('session.model', { sessionId: s.id, provider, model, reasoningEffort });
       if (app.session === s) { s.model = r.model; renderSessionChrome(); }
@@ -962,7 +1271,19 @@ function scrollBottom(instant = false) {
   if (w) requestAnimationFrame(() => w.scrollTo({ top: w.scrollHeight, behavior: instant ? 'instant' : 'smooth' }));
 }
 
-async function sendMessage() {
+/** Uploads a message's images (the desktop keeps an upload only until the prompt that names it). */
+async function uploadDrafts(drafts, send) {
+  const uploads = [];
+  const total = drafts.reduce((n, d) => n + d.blob.size, 0);
+  let before = 0;
+  for (const d of drafts) {
+    uploads.push(await uploadImage(d.blob, d.name, (sent) => { if (send) send.dataset.progress = `${Math.round(((before + sent) / total) * 100)}%`; }));
+    before += d.blob.size;
+  }
+  return uploads;
+}
+
+async function sendMessage(mode = 'queue') {
   const input = $('#composer');
   const text = input.value.trim();
   const s = app.session;
@@ -972,19 +1293,13 @@ async function sendMessage() {
   s.sending = true;
   renderDrafts();
   if (send) send.disabled = true;
-  input.value = ''; input.style.height = 'auto';
+  input.value = ''; input.style.height = 'auto'; s.text = '';
   renderSlash();
   vibrate();
   try {
     // Uploaded on every attempt: the desktop keeps an upload only until the prompt that names it.
-    const uploads = [];
-    const total = drafts.reduce((n, d) => n + d.blob.size, 0);
-    let before = 0;
-    for (const d of drafts) {
-      uploads.push(await uploadImage(d.blob, d.name, (sent) => { if (send) send.dataset.progress = `${Math.round(((before + sent) / total) * 100)}%`; }));
-      before += d.blob.size;
-    }
-    const r = await app.link.rpc('session.prompt', { sessionId: s.id, text, uploads, mode: 'queue', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, 150_000);
+    const uploads = await uploadDrafts(drafts, send);
+    const r = await app.link.rpc('session.prompt', { sessionId: s.id, text, uploads, mode, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, 150_000);
     s.sending = false;
     // A slash command ran on the desktop; its row in the log shows the result. Like DSH's
     // composer, a failed command keeps its text for correction.
@@ -997,7 +1312,7 @@ async function sendMessage() {
     s.running = true; renderSessionChrome(); renderLive(); scrollBottom();
   } catch (e) {
     s.sending = false;
-    input.value = text;
+    input.value = text; s.text = text;
     fitComposer();
     renderDrafts();
     toast(e.message, 'err');
@@ -1021,7 +1336,7 @@ function renderSettings() {
   if (!pushSupported) pushNote = isIOS() && !standalone() ? 'iPhone 需要先「分享 → 添加到主屏幕」，并从主屏幕打开，才能开启通知（配对需在主屏幕 App 里重新扫码）。' : '这个浏览器不支持推送通知。';
   const permission = pushSupported ? Notification.permission : 'unsupported';
   return h('main', { class: 'screen form' },
-    h('header', { class: 'bar' }, h('button', { class: 'icon-btn', onClick: () => { app.view = { name: 'home' }; render(); } }, icon('back')), h('div', { class: 'bar-title' }, h('b', {}, '设置'))),
+    h('header', { class: 'bar' }, h('button', { class: 'icon-btn', 'aria-label': '返回', onClick: goHome }, icon('back')), h('div', { class: 'bar-title' }, h('b', {}, '设置'))),
     h('section', { class: 'card' },
       h('b', {}, '通知'),
       h('p', { class: 'muted' }, '任务完成、需要审批或回答、出错时通知你。通知内容端到端加密。'),

@@ -41,7 +41,7 @@ try {
   check((await text('#model')) === 'Opus 5.5 High', `model pill shows "${await text('#model')}"`);
   check(await page.$eval('#send', (b) => b.disabled), 'send is disabled while the box is empty');
   const statsLine = await text('#stats');
-  check(statsLine.replace(/\s+/g, ' ') === '1 轮 3 步 · 缓存 90% · 上下文 41% · 55 tok/s', `stats line: ${statsLine.replace(/\s+/g, ' ')}`);
+  check(statsLine.replace(/\s+/g, ' ') === '1 轮 3 步 · 已用 42.8K · 缓存 90% · 上下文 41% · 55 tok/s', `stats line: ${statsLine.replace(/\s+/g, ' ')}`);
 
   await page.click('.msg.assistant .msg-actions .act-btn');
   const copied = await page.evaluate(() => navigator.clipboard.readText());
@@ -61,10 +61,10 @@ try {
   await shot('ui-3-menu');
   check((await page.$$eval('.pop-item', (n) => n.map((e) => e.innerText.trim()))).join('|') === '新会话|刷新', 'menu has only New session and Refresh');
   await page.evaluate(() => document.querySelector('.pop-item').click());
-  await page.waitForSelector('#ws');
-  check((await page.$eval('#ws', (el) => el.selectedOptions[0].innerText)) === 'proj', 'New session preselects the current workspace');
+  await page.waitForFunction(() => document.querySelector('#wschip')?.innerText.trim() === 'proj', { timeout: 5000 }).catch(() => {});
+  check((await page.$eval('#wschip', (el) => el.innerText.trim())) === 'proj', 'New session preselects the current workspace');
   await shot('ui-3b-new');
-  await page.evaluate(() => document.querySelector('.bar .icon-btn').click());
+  await page.evaluate(() => document.querySelector('.new .bar .round-btn').click());
   await page.waitForSelector('.msg.assistant .msg-actions', { timeout: 15000 });
   check(true, 'Back from New session returns to the session');
   await new Promise((r) => setTimeout(r, 300));
