@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-pair",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Pair a phone with DSH: view sessions, send messages, stop runs, approve actions and get notified — through an end-to-end encrypted Cloudflare relay",
   "private": true,
   "type": "module",
