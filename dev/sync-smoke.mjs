@@ -59,43 +59,27 @@ check(await page.$eval('#send', (b) => !b.dataset.stop && !b.disabled), 'the but
 await page.$eval('#composer', (el) => { el.value = ''; el.dispatchEvent(new Event('input')); });
 await shot('sync-1-after-away');
 
-// Long press on your message: a "复制" button; tapping it copies, and the transcript stays.
-const longPress = async () => {
-  const box = await page.$eval('.msg.user .bubble', (el) => { el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
-  await page.touchscreen.touchStart(box.x, box.y); await sleep(650); await page.touchscreen.touchEnd();
-};
+// Text is selected the system's way: the transcript is selectable and a long press opens no menu
+// of ours. The copy button under a reply copies, and so does its fallback, without moving the page.
+check(await page.$eval('.log .msg.assistant .md', (el) => getComputedStyle(el).webkitUserSelect !== 'none' && getComputedStyle(el).userSelect !== 'none'), 'replies are selectable natively');
+check(await page.$eval('.log .msg.user .bubble', (el) => getComputedStyle(el).webkitUserSelect !== 'none' && getComputedStyle(el).webkitTouchCallout !== 'none'), 'your messages are selectable natively');
+const bubble = await page.$eval('.msg.user .bubble', (el) => { el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+await page.touchscreen.touchStart(bubble.x, bubble.y); await sleep(650); await page.touchscreen.touchEnd();
+await sleep(200);
+check(!(await page.$('.pop-bg')), 'a long press opens no menu of ours');
+const copyButton = () => page.evaluate(() => { const b = [...document.querySelectorAll('.msg-actions')].find((el) => getComputedStyle(el).display !== 'none').querySelector('.act-btn'); b.scrollIntoView({ block: 'center' }); b.click(); });
 const intact = () => page.evaluate(() => ({ msgs: document.querySelectorAll('.log .msg').length, bar: Boolean(document.querySelector('.sbar #stitle b')), y: window.scrollY }));
 const before = await intact();
-await longPress();
-check(Boolean(await page.$('.copy-pop')), 'long press shows a copy button');
-await shot('sync-2-copy-menu');
-await page.click('.copy-pop .pop-item');
+await copyButton();
 await sleep(300);
-check((await page.evaluate(() => navigator.clipboard.readText())) === '帮我看看 parser 里为什么会漏掉最后一行', 'tapping it copies the message');
-// Without the clipboard API: the execCommand fallback, which must not move or blank the page.
-await page.evaluate(() => { navigator.clipboard.writeText = () => Promise.reject(new Error('NotAllowedError')); });
-await longPress();
-await page.click('.copy-pop .pop-item');
+check((await page.evaluate(() => navigator.clipboard.readText())).startsWith('找到了'), 'the copy button copies the reply');
+await page.evaluate(() => { navigator.clipboard.writeText = () => Promise.reject(new Error('NotAllowedError')); document.querySelectorAll('.toast').forEach((t) => t.remove()); });
+await copyButton();
 await sleep(400);
 const after = await intact();
 check(await page.evaluate(() => [...document.querySelectorAll('.toast')].some((t) => t.innerText.includes('已复制'))), 'the fallback copies too');
 check(after.msgs === before.msgs && after.bar && after.y === before.y && !(await page.$('textarea[readonly]')), 'the page neither moves nor loses its transcript');
-await shot('sync-3-after-copy');
-
-// A reply: no system selection in the transcript; long press offers 复制 and 选择文本, which opens
-// the text in a panel of its own.
-check(await page.$eval('.log', (el) => getComputedStyle(el).webkitUserSelect === 'none' || getComputedStyle(el).userSelect === 'none'), 'the transcript is not selectable on a touch screen');
-await page.evaluate(() => document.querySelector('.copy-pop')?.closest('.pop-bg')?.remove());
-const reply = await page.$eval('.msg.assistant .md', (el) => { el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.left + 40, y: r.top + 12 }; });
-await page.touchscreen.touchStart(reply.x, reply.y); await sleep(650); await page.touchscreen.touchEnd();
-await sleep(200);
-check((await page.$$eval('.copy-pop .pop-item', (els) => els.map((e) => e.innerText.trim()))).join('|') === '复制|选择文本', 'long press on a reply: 复制 | 选择文本');
-await shot('sync-4-reply-menu');
-await page.evaluate(() => [...document.querySelectorAll('.copy-pop .pop-item')].find((b) => b.innerText.includes('选择文本')).click());
-await page.waitForSelector('.sheet-bg.show .select-text');
-check((await page.$eval('.select-text', (el) => el.innerText)).includes('找到了'), '选择文本 shows the reply in a panel');
-check(await page.$eval('.select-text', (el) => getComputedStyle(el).webkitUserSelect !== 'none'), '…where it can be selected');
-await shot('sync-5-select-text');
+await shot('sync-2-after-copy');
 
 await browser.close();
 server.close();

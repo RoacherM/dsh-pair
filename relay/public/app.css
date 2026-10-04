@@ -104,7 +104,7 @@ button { font: inherit; color: inherit; }
 .log-wrap { flex: 1; overflow-y: auto; margin: 0 -16px; padding: 12px 16px 16px; }
 .log { display: flex; flex-direction: column; gap: 10px; }
 .msg.user { align-self: flex-end; max-width: 86%; display: flex; flex-direction: column; align-items: flex-end; }
-.bubble { padding: 10px 15px; border-radius: 20px; font-size: 16px; -webkit-touch-callout: none; background: var(--user); color: var(--user-fg); white-space: pre-wrap; word-break: break-word; }
+.bubble { padding: 10px 15px; border-radius: 20px; font-size: 16px; background: var(--user); color: var(--user-fg); white-space: pre-wrap; word-break: break-word; }
 .src { font-size: 11px; color: var(--fg3); margin-top: 2px; }
 .msg.assistant { max-width: 100%; word-break: break-word; font-size: 16px; line-height: 1.65; }
 .msg-actions { display: none; gap: 2px; margin: 6px 0 0 -6px; color: var(--fg3); }
@@ -337,16 +337,6 @@ body.dropping::after { content: '松开即可添加图片'; position: fixed; ins
 .wide .sheet-grab { display: none; }
 .wide .sheet-title { padding-top: 6px; }
 
-/* long press on your message: one "复制" button above it */
-.copy-pop { min-width: 0; padding: 4px; border-radius: 16px; }
-.copy-pop .pop-item { padding: 9px 14px; font-size: 15px; gap: 8px; }
-/* On a touch screen the transcript is not selectable: long press offers 复制 / 选择文本 instead. */
-@media (hover: none), (pointer: coarse) {
-  .log { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-}
-.select-text { padding: 14px 16px; border-radius: 14px; background: var(--l1); box-shadow: 0 0 0 1px var(--line); white-space: pre-wrap; word-break: break-word;
-  font-size: 16px; line-height: 1.6; -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; max-height: 58vh; overflow-y: auto; }
-.copy-pop { width: 180px; }
 /* Fewer composited layers in a long transcript: nothing pulses once the turn is over, and the
    session bar (which never overlaps the scrolling log) needs no backdrop blur. */
 .session:not(.running) .log .tool-state { animation: none; }
