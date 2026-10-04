@@ -82,5 +82,20 @@ check(await page.evaluate(() => [...document.querySelectorAll('.toast')].some((t
 check(after.msgs === before.msgs && after.bar && after.y === before.y && !(await page.$('textarea[readonly]')), 'the page neither moves nor loses its transcript');
 await shot('sync-3-after-copy');
 
+// A reply: no system selection in the transcript; long press offers 复制 and 选择文本, which opens
+// the text in a panel of its own.
+check(await page.$eval('.log', (el) => getComputedStyle(el).webkitUserSelect === 'none' || getComputedStyle(el).userSelect === 'none'), 'the transcript is not selectable on a touch screen');
+await page.evaluate(() => document.querySelector('.copy-pop')?.closest('.pop-bg')?.remove());
+const reply = await page.$eval('.msg.assistant .md', (el) => { el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.left + 40, y: r.top + 12 }; });
+await page.touchscreen.touchStart(reply.x, reply.y); await sleep(650); await page.touchscreen.touchEnd();
+await sleep(200);
+check((await page.$$eval('.copy-pop .pop-item', (els) => els.map((e) => e.innerText.trim()))).join('|') === '复制|选择文本', 'long press on a reply: 复制 | 选择文本');
+await shot('sync-4-reply-menu');
+await page.evaluate(() => [...document.querySelectorAll('.copy-pop .pop-item')].find((b) => b.innerText.includes('选择文本')).click());
+await page.waitForSelector('.sheet-bg.show .select-text');
+check((await page.$eval('.select-text', (el) => el.innerText)).includes('找到了'), '选择文本 shows the reply in a panel');
+check(await page.$eval('.select-text', (el) => getComputedStyle(el).webkitUserSelect !== 'none'), '…where it can be selected');
+await shot('sync-5-select-text');
+
 await browser.close();
 server.close();

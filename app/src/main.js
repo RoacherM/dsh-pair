@@ -979,6 +979,7 @@ function renderSessionChrome() {
   const s = app.session;
   const t = $('#stitle');
   if (!s || !t) return;
+  $('.screen.session')?.classList.toggle('running', Boolean(s.running));
   fill(t, h('b', {}, s.title || '会话'), h('span', { class: 'status' }, s.running ? h('span', { class: 'dot busy' }) : null, s.running ? '运行中' : base(s.cwd) || '空闲'));
   renderStats(); renderQueue();
   renderModelPill();
@@ -1146,28 +1147,39 @@ function legacyCopy(text) {
 }
 
 /**
- * Long press on a touch screen shows a "复制" button over `el`; tapping it copies. A copy started by
- * the press timer itself is not a user gesture, and iOS refuses it. A mouse keeps its own menu.
+ * Long press on a touch screen shows "复制 / 选择文本", as the Claude app does: the transcript itself
+ * is not selectable there (iOS text selection in the long transcript blanked the page), and a copy
+ * started by the press timer is not a user gesture, which iOS refuses. A mouse selects as usual.
  */
-function onLongPress(el, text) {
+function onLongPress(el, text, shown = () => text) {
   let timer;
   const cancel = () => clearTimeout(timer);
-  el.addEventListener('touchstart', () => { cancel(); timer = setTimeout(() => copyMenu(el, text), 480); }, { passive: true });
+  el.addEventListener('touchstart', (e) => {
+    cancel();
+    const t = e.touches[0];
+    timer = setTimeout(() => copyMenu(t.clientX, t.clientY, text, shown()), 480);
+  }, { passive: true });
   for (const ev of ['touchend', 'touchmove', 'touchcancel']) el.addEventListener(ev, cancel, { passive: true });
   el.addEventListener('contextmenu', (e) => { if (!enterSends()) e.preventDefault(); });
 }
 
-function copyMenu(el, text) {
+/** A message as plain text in a panel of its own, where the system selection works. */
+function openSelectText(text, shown) {
+  openSheet('选择文本', (close) => h('div', { class: 'sheet-list' },
+    h('div', { class: 'select-text' }, shown),
+    h('button', { class: 'sheet-item', onClick: () => { close(); copyText(text); } }, '全部复制')));
+}
+
+function copyMenu(x, y, text, shown) {
   vibrate();
-  const r = el.getBoundingClientRect();
-  const above = r.top > 70;
   const close = () => { bg.remove(); off(); };
   // The click that may follow lifting the pressing finger must not close the menu at once.
   let armedAt = Infinity;
   document.addEventListener('touchend', () => { armedAt = Date.now() + 400; }, { once: true });
   const bg = h('div', { class: 'pop-bg', onClick: (e) => { if (e.target === bg && Date.now() > armedAt) close(); } },
-    h('div', { class: 'popover copy-pop', style: { top: above ? `${r.top - 54}px` : `${r.bottom + 8}px`, right: `${Math.max(12, innerWidth - r.right)}px` } },
-      h('button', { class: 'pop-item', onClick: () => { close(); copyText(text); } }, icon('copy'), h('span', {}, '复制'))));
+    h('div', { class: 'popover copy-pop', style: { top: `${Math.max(12, y - 120)}px`, left: `${Math.min(Math.max(12, x - 90), innerWidth - 192)}px`, right: 'auto' } },
+      h('button', { class: 'pop-item', onClick: () => { close(); copyText(text); } }, icon('copy'), h('span', {}, '复制')),
+      h('button', { class: 'pop-item', onClick: () => { close(); openSelectText(text, shown); } }, icon('edit'), h('span', {}, '选择文本'))));
   const off = pushOverlay(close);
   document.body.append(bg);
 }
@@ -1181,6 +1193,7 @@ function replyNode(text) {
     wrap.append(pre, h('button', { class: 'code-copy', 'aria-label': '复制代码', onClick: () => copyText(pre.innerText) }, icon('copy')));
   }
   const share = navigator.share ? h('button', { class: 'act-btn', 'aria-label': '分享', onClick: () => navigator.share({ text }).catch(() => {}) }, icon('share')) : null;
+  onLongPress(body, text, () => body.innerText); // the panel shows the reply as read, copying keeps its Markdown
   return h('div', { class: 'msg assistant' }, body,
     h('div', { class: 'msg-actions' }, h('button', { class: 'act-btn', 'aria-label': '复制', onClick: () => copyText(text) }, icon('copy')), share));
 }

@@ -29,7 +29,7 @@ button { font: inherit; color: inherit; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg3); flex: none; }
 .dot.ok { background: var(--ok); } .dot.err { background: var(--err); }
 .dot.busy { background: var(--warn); animation: pulse 1.1s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: .35; transform: scale(.8); } }
+@keyframes pulse { 50% { opacity: .35; } }
 
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 46px; padding: 0 18px; border: none; border-radius: 14px; background: var(--l1); box-shadow: inset 0 0 0 1px var(--line); font-weight: 600; font-size: 15px; }
 .btn:active { transform: scale(.98); }
@@ -101,7 +101,7 @@ button { font: inherit; color: inherit; }
 
 /* session */
 .session { height: 100%; padding-bottom: 0; gap: 0; }
-.log-wrap { flex: 1; overflow-y: auto; margin: 0 -16px; padding: 12px 16px 16px; -webkit-overflow-scrolling: touch; }
+.log-wrap { flex: 1; overflow-y: auto; margin: 0 -16px; padding: 12px 16px 16px; }
 .log { display: flex; flex-direction: column; gap: 10px; }
 .msg.user { align-self: flex-end; max-width: 86%; display: flex; flex-direction: column; align-items: flex-end; }
 .bubble { padding: 10px 15px; border-radius: 20px; font-size: 16px; -webkit-touch-callout: none; background: var(--user); color: var(--user-fg); white-space: pre-wrap; word-break: break-word; }
@@ -235,7 +235,7 @@ button { font: inherit; color: inherit; }
 /* "/" menu above the composer, and slash-command rows in the log */
 /* Short enough to stay above the keyboard; the rest scrolls inside the menu, not the page. */
 .slash { display: flex; flex-direction: column; margin-bottom: 6px; border-radius: 18px; background: var(--l1); box-shadow: 0 0 0 1px var(--line), 0 6px 22px rgba(0,0,0,.07);
-  max-height: 34vh; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  max-height: 34vh; overflow-y: auto; overscroll-behavior: contain; }
 .slash:empty { display: none; }
 .slash-item { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: none; background: none; text-align: left; font-size: 14px; }
 .slash-item + .slash-item { border-top: 1px solid var(--line); }
@@ -340,5 +340,14 @@ body.dropping::after { content: '松开即可添加图片'; position: fixed; ins
 /* long press on your message: one "复制" button above it */
 .copy-pop { min-width: 0; padding: 4px; border-radius: 16px; }
 .copy-pop .pop-item { padding: 9px 14px; font-size: 15px; gap: 8px; }
-.bubble { -webkit-user-select: none; user-select: none; }
-@media (hover: hover) and (pointer: fine) { .bubble { -webkit-user-select: text; user-select: text; } }
+/* On a touch screen the transcript is not selectable: long press offers 复制 / 选择文本 instead. */
+@media (hover: none), (pointer: coarse) {
+  .log { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+}
+.select-text { padding: 14px 16px; border-radius: 14px; background: var(--l1); box-shadow: 0 0 0 1px var(--line); white-space: pre-wrap; word-break: break-word;
+  font-size: 16px; line-height: 1.6; -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; max-height: 58vh; overflow-y: auto; }
+.copy-pop { width: 180px; }
+/* Fewer composited layers in a long transcript: nothing pulses once the turn is over, and the
+   session bar (which never overlaps the scrolling log) needs no backdrop blur. */
+.session:not(.running) .log .tool-state { animation: none; }
+.sbar { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg); }
