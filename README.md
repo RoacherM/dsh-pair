@@ -25,7 +25,10 @@ iPhone PWA ──wss──▶ Cloudflare Worker + Durable Object（中继，只�
 ## 常用命令
 
 ```bash
-npm test                                            # 加密单测 + 真实中继全链路
+npm test                                            # 加密单测 + 真实中继全链路（含手机端重连）
+# 中继对死连接的处理（本地中继，超时调短）：
+cd relay && npx wrangler dev --port 8799 --var DESKTOP_STALE_MS:3000 --var CLIENT_STALE_MS:3000
+RELAY=http://127.0.0.1:8799 node --test test/relay-zombie.live.mjs
 cd app && NODE_PATH=../node_modules node build.mjs   # 构建 PWA
 cd relay && npx wrangler deploy                      # 部署中继和 PWA
 cd plugin && NODE_PATH=../node_modules node build.mjs # 构建插件

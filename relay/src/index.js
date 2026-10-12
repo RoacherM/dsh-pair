@@ -15,6 +15,12 @@
  *   Client sockets carry the raw `d` strings; the relay also tells clients {t:'online'|'offline'}
  *   in frames starting with "\u0000" so they never collide with payloads.
  * - Literal "ping" is answered "pong" by the runtime without waking the DO (hibernation).
+ * - Dead sockets: a peer that vanished without a FIN or a close frame (a laptop asleep, a phone
+ *   suspended by iOS, a changed network) stays in getWebSockets(), and a socket the relay closes
+ *   stays there until the peer acknowledges, which a dead peer never does. So the relay never trusts
+ *   list order: the newest desktop socket is the seat, and a socket counts as alive only while it
+ *   pings (the runtime records each auto-answered ping). Desktops ping every 20 s, phones every
+ *   20 s while open.
  * - Everything else is served from ./public (the PWA).
  */
 
@@ -22,6 +28,8 @@ const ID_RE = /^[A-Za-z0-9_-]{22}$/;
 const MAX_CLIENTS = 8;
 const MAX_FRAME = 4 * 1024 * 1024;
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
+const DESKTOP_STALE_MS = 70_000; // three missed desktop pings
+const CLIENT_STALE_MS = 90_000; // background browser tabs may ping only once a minute
 
 const b64urlDecode = (s) => {
   const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4);
@@ -73,27 +81,62 @@ export default {
 };
 
 export class Room {
-  constructor(state) {
+  constructor(state, env = {}) {
     this.state = state;
+    // Overridable for local tests only (wrangler dev --var DESKTOP_STALE_MS:3000 …).
+    this.desktopStaleMs = Number(env.DESKTOP_STALE_MS) || DESKTOP_STALE_MS;
+    this.clientStaleMs = Number(env.CLIENT_STALE_MS) || CLIENT_STALE_MS;
     state.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
-  desktop() {
-    return this.state.getWebSockets('desktop')[0];
+  /** When this socket last proved it is alive: its last ping, or when it connected. */
+  lastHeard(ws) {
+    const since = ws.deserializeAttachment()?.since ?? 0;
+    const pinged = this.state.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0;
+    return Math.max(since, pinged);
   }
 
+  alive(ws, staleMs) {
+    return Date.now() - this.lastHeard(ws) <= staleMs;
+  }
+
+  /** The seat: the newest desktop socket, if it is still pinging. Older ones are being replaced. */
+  desktop(except) {
+    let newest;
+    for (const ws of this.state.getWebSockets('desktop')) {
+      if (ws === except) continue;
+      if (!newest || (ws.deserializeAttachment()?.since ?? 0) > (newest.deserializeAttachment()?.since ?? 0)) newest = ws;
+    }
+    return newest && this.alive(newest, this.desktopStaleMs) ? newest : undefined;
+  }
+
+  /** Phone sockets still pinging; dead ones linger in getWebSockets() until swept. */
   clients() {
-    return this.state.getWebSockets('client');
+    return this.state.getWebSockets('client').filter((ws) => this.alive(ws, this.clientStaleMs));
   }
 
   clientById(cid) {
     return this.state.getWebSockets(`c:${cid}`)[0];
   }
 
+  /** Close sockets whose peers stopped pinging, so neither side keeps talking to them. */
+  sweep() {
+    const desktop = this.desktop();
+    for (const ws of this.state.getWebSockets('desktop')) {
+      if (ws !== desktop && !this.alive(ws, this.desktopStaleMs)) { try { ws.close(4002, 'no ping'); } catch {} }
+    }
+    for (const ws of this.state.getWebSockets('client')) {
+      if (this.alive(ws, this.clientStaleMs)) continue;
+      try { ws.close(4002, 'no ping'); } catch {}
+      if (desktop) safeSend(desktop, JSON.stringify({ t: 'close', c: ws.deserializeAttachment()?.cid }));
+    }
+  }
+
   async fetch(request) {
     const role = new URL(request.url).pathname.slice(1);
     if (role === 'status') return Response.json({ online: Boolean(this.desktop()), clients: this.clients().length });
 
+    this.sweep();
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
@@ -102,7 +145,7 @@ export class Room {
         try { old.close(4000, 'replaced by a newer desktop connection'); } catch {}
       }
       this.state.acceptWebSocket(server, ['desktop']);
-      server.serializeAttachment({ role: 'desktop' });
+      server.serializeAttachment({ role: 'desktop', since: Date.now() });
       for (const ws of this.clients()) {
         const { cid } = ws.deserializeAttachment();
         server.send(JSON.stringify({ t: 'open', c: cid }));
@@ -112,7 +155,7 @@ export class Room {
       if (this.clients().length >= MAX_CLIENTS) return text('too many clients', 429);
       const cid = crypto.randomUUID();
       this.state.acceptWebSocket(server, ['client', `c:${cid}`]);
-      server.serializeAttachment({ role: 'client', cid });
+      server.serializeAttachment({ role: 'client', cid, since: Date.now() });
       const desktop = this.desktop();
       if (desktop) {
         safeSend(desktop, JSON.stringify({ t: 'open', c: cid }));
@@ -131,9 +174,10 @@ export class Room {
     if (meta?.role === 'client') {
       const desktop = this.desktop();
       if (desktop) safeSend(desktop, JSON.stringify({ t: 'data', c: meta.cid, d: message }));
-      else safeSend(ws, '\u0000offline');
+      else { safeSend(ws, '\u0000offline'); this.sweep(); }
       return;
     }
+    if (ws !== this.desktop()) return; // a replaced desktop socket no longer speaks for the seat
     let frame;
     try { frame = JSON.parse(message); } catch { return; }
     const target = typeof frame?.c === 'string' ? this.clientById(frame.c) : undefined;
@@ -155,11 +199,10 @@ export class Room {
     const meta = ws.deserializeAttachment();
     if (meta?.role === 'client') {
       const desktop = this.desktop();
-      if (desktop && desktop !== ws) safeSend(desktop, JSON.stringify({ t: 'close', c: meta.cid }));
+      if (desktop) safeSend(desktop, JSON.stringify({ t: 'close', c: meta.cid }));
     } else if (meta?.role === 'desktop') {
-      // Only announce offline when no newer desktop socket took over.
-      const others = this.state.getWebSockets('desktop').filter((other) => other !== ws);
-      if (!others.length) for (const client of this.clients()) safeSend(client, '\u0000offline');
+      // Only announce offline when no live desktop socket took over.
+      if (!this.desktop(ws)) for (const client of this.clients()) safeSend(client, '\u0000offline');
     }
   }
 }
