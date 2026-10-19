@@ -22,6 +22,8 @@ export function scanQr() {
     };
     overlay.querySelector('button').onclick = () => finish(null);
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false }).then((s) => {
+      // The user may have cancelled while the permission prompt was up; don't leave the camera on.
+      if (done) { s.getTracks().forEach((t) => t.stop()); return; }
       stream = s;
       video.srcObject = s;
       video.play().catch(() => {});

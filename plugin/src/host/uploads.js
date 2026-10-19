@@ -22,7 +22,9 @@ export function createUploads({ now = () => Date.now() } = {}) {
     for (const [id, upload] of uploads) if (now() - upload.touched > UPLOAD_TTL_MS) uploads.delete(id);
   }
 
-  /** One chunk. The first chunk (offset 0, no id) opens an upload; chunks must arrive in order. */
+  /** One chunk. The first chunk (offset 0, no id) opens an upload; chunks must arrive in order.
+   *  A client may re-send the same chunk after a network hiccup: if the chunk's offset and bytes
+   *  match what we already stored, answer as if it just landed (idempotent retry). */
   function put(p = {}) {
     expire();
     const data = unb64(String(p.data ?? ''));
@@ -40,7 +42,22 @@ export function createUploads({ now = () => Date.now() } = {}) {
       upload = { mediaType, name: p.name ? String(p.name).slice(0, 120) : undefined, total, parts: [], received: 0, touched: now() };
       uploads.set(id, upload);
     }
-    if (Number(p.offset ?? 0) !== upload.received) throw new Error(`上传顺序错误：期望偏移 ${upload.received}`);
+    const offset = Number(p.offset ?? 0);
+    // Idempotent retry: the same chunk arriving again is answered without storing it twice.
+    if (offset < upload.received) {
+      const end = offset + data.length;
+      if (end > upload.received) throw new Error(`上传顺序错误：期望偏移 ${upload.received}`);
+      // Find the byte range this chunk claims and compare to the stored bytes.
+      const stored = Buffer.concat(upload.parts);
+      if (end <= stored.length && stored.subarray(offset, end).equals(data)) {
+        upload.touched = now();
+        return { id, received: upload.received, done: upload.received === upload.total };
+      }
+      // Same offset, different bytes: not a retry, the client lost track. Report as out-of-order
+      // so the existing error handling (resend from scratch) kicks in.
+      throw new Error(`上传顺序错误：偏移 ${offset} 处的内容与之前不同`);
+    }
+    if (offset !== upload.received) throw new Error(`上传顺序错误：期望偏移 ${upload.received}`);
     if (upload.received + data.length > upload.total) { uploads.delete(id); throw new Error('上传的数据超过声明的大小'); }
     upload.parts.push(data);
     upload.received += data.length;

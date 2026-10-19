@@ -83,7 +83,11 @@ function phoneSocket(url) {
 const next = (ws, ms = 15000) => ws.q.length ? Promise.resolve(ws.q.shift()) : new Promise((res, rej) => {
   const t = setTimeout(() => rej(new Error('timeout')), ms); ws.w.push((d) => { clearTimeout(t); res(d); });
 });
-const call = async (routes, key, body) => (await routes.get(key)(new Request('http://x/api' + key.split(' ')[1], { method: key.split(' ')[0], body: body ? JSON.stringify(body) : undefined }))).json();
+const call = async (routes, key, body) => (await routes.get(key)(new Request('http://x/api' + key.split(' ')[1], {
+  method: key.split(' ')[0],
+  headers: body ? { 'content-type': 'application/json' } : undefined,
+  body: body ? JSON.stringify(body) : undefined,
+}))).json();
 
 test('pair, browse, prompt, live stream, away approval — through the real relay', { timeout: 90_000 }, async () => {
   const f = fakeCtx();
@@ -202,7 +206,7 @@ test('pair, browse, prompt, live stream, away approval — through the real rela
   await rpc('pending.answer', { id: pend.pending[0].id, decision: 'allow' });
   assert.equal(await decision, 'allowed-once');
 
-  const q = f.ctx.waterfall('user-questions/request', { agent: { session: { id: 's1' } }, questions: [{ id: 'q1', question: '选哪个？', options: [{ label: 'A' }, { label: 'B' }] }] }, () => Promise.reject(new Error('none')));
+  const q = f.ctx.waterfall('user-questions/request', { agent: { session: { id: 's1' } }, questions: [{ id: 'q1', question: '选哪个？', options: [{ label: 'A' }, { label: 'B' }] }] }, () => Promise.reject(Object.assign(new Error('none'), { code: 'NO_PROVIDER' })));
   let pq; do { pq = await nextEvent('pending'); } while (!pq.pending.some((x) => x.kind === 'question'));
   pq.pending = pq.pending.filter((x) => x.kind === 'question');
   await rpc('pending.answer', { id: pq.pending[0].id, answers: [{ id: 'q1', selected: ['B'] }] });

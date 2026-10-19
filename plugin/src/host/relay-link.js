@@ -44,9 +44,13 @@ export function createRelayLink({ relayUrl, desktopId, signKeys, log = () => {},
     }
     ws = socket;
     socket.onopen = () => {
-      attempt = 0;
       lastHeard = Date.now();
       setStatus('online');
+      // Don't reset the backoff immediately: a relay that accepts then instantly closes
+      // (auth failed, replaced, rate limited) would otherwise spin at ~1s forever. Reset
+      // only once the connection has been stable for a while.
+      const stableTimer = setTimeout(() => { attempt = 0; }, 30_000);
+      socket.addEventListener('close', () => clearTimeout(stableTimer), { once: true });
       clearInterval(pingTimer);
       pingTimer = setInterval(() => {
         if (Date.now() - lastHeard > DEAD_MS) { try { socket.close(4002, 'heartbeat timeout'); } catch {} return; }
@@ -75,6 +79,14 @@ export function createRelayLink({ relayUrl, desktopId, signKeys, log = () => {},
       clearInterval(pingTimer);
       dropClients();
       if (event.code === 1008 || /auth failed/.test(event.reason ?? '')) log(`dsh-pair: 中继拒绝了连接：${event.reason}`);
+      // Code 4000: the relay replaced us with a newer desktop socket holding the same key —
+      // reconnecting would kick that one and ping-pong forever. Stay down until kicked
+      // (e.g. after the other instance exits, the user reloads this plugin, or a wake-up).
+      if (event.code === 4000) {
+        log(`dsh-pair: 另一个桌面实例接管了中继连接，本实例不再自动重连`);
+        setStatus('offline', event.reason ?? 'replaced');
+        return;
+      }
       setStatus(stopped ? 'stopped' : 'offline', event.reason);
       schedule();
     };

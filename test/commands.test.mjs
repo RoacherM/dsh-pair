@@ -73,7 +73,7 @@ test('anything that is not a registered command stays a prompt', async () => {
 test('the phone menu lists only allowed commands, plus the session skills', async () => {
   const { ctx } = fakeCtx();
   const menu = await createCommands({ ctx }).list('S1');
-  assert.deepEqual(menu.commands.map((c) => c.name), ['compact', 'export', 'goal', 'plan']);
+  assert.deepEqual(menu.commands.map((c) => c.name), ['compact', 'goal', 'plan']); // /export opt-in only
   assert.deepEqual(menu.commands.find((c) => c.name === 'goal'), { name: 'goal', description: 'goal 说明', hint: '<目标>' });
   assert.deepEqual(menu.skills, [{ name: 'review', description: '代码评审' }]);
   assert.deepEqual(await createCommands({ ctx: {} }).list('S1'), { commands: [], skills: [] });

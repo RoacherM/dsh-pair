@@ -158,6 +158,10 @@ export function createPhones({ ctx, state, pairing, away, push, images, commands
     peer.device = device;
     peer.stage = 'ready';
     await state.updateDevice(device.id, { lastSeen: Date.now() });
+    // The peer may have disconnected while we were awaiting state.updateDevice (e.g. the relay
+    // dropped a slow client). Sending to a closed cid is harmless but wasted, and onChange would
+    // advertise a phone that is no longer there.
+    if (!peers.has(peer.cid)) return;
     send(peer, {
       type: 'ready', paired, deviceId: device.id, deviceName: device.name, desktopName: state.desktopName,
       vapidPublicKey: push.publicKey, hasPush: Boolean(device.push), away: away.view(), pending: away.pending(),
@@ -249,6 +253,9 @@ export function createPhones({ ctx, state, pairing, away, push, images, commands
     clearTimeout(peer.watch?.liveTimer);
     clearTimeout(peer.watch?.statsTimer);
     peer.watch = null;
+    // Image refs are per-session: a phone that moves from session A to B must not be able to
+    // keep fetching A's attachments through the still-valid ids in peer.images.
+    peer.images.clear();
   }
 
   async function watch(peer, sessionId) {
@@ -271,6 +278,9 @@ export function createPhones({ ctx, state, pairing, away, push, images, commands
     w.attemptId = snapshot.activeAttempt?.attemptId;
     pump(peer, w, iterator);
     // Whether a turn runs now: a phone that reconnects has missed the status events in between.
+    // listSessions() is the only authoritative source, but it's slow (resumes agents). Fall back
+    // gracefully: a cached title or an agent in the live registry is enough signal to show "运行中"
+    // while the snapshot loads. The status will be corrected by the next 'status' broadcast.
     let running;
     try { running = (await listSessions()).find((s) => s.id === sessionId)?.running; } catch {}
     return {
@@ -349,6 +359,9 @@ export function createPhones({ ctx, state, pairing, away, push, images, commands
     const page = await ctx.sessionController.page({
       address: { kind: 'session', sessionId }, throughSeq: w?.cursor ?? beforeSeq, beforeSeq, turnWindow: WATCH_WINDOW,
     }, AbortSignal.timeout(20_000));
+    // The peer may have switched sessions while the page was in flight; registering the old
+    // session's image refs would let the phone fetch them while watching another session.
+    if (!peers.has(peer.cid)) throw new Error('连接已断开');
     return { items: share(peer, projectRecords(page.records)), hasMore: page.hasMore, firstSeq: page.records?.[0]?.event?.seq ?? null };
   }
 

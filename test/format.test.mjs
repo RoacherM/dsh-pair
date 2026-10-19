@@ -30,6 +30,8 @@ test('the "/" menu filters commands, then skills, by the typed prefix and shows 
   assert.deepEqual(slashMenu(menu, '/zz').items, []);
   assert.equal(slashMenu(menu, '/goal ').hint, '/goal <目标>');
   assert.equal(slashMenu(menu, '/compact ').hint, null);
+  // A skill has no hint; show its description so the user knows what `/name ` now targets.
+  assert.equal(slashMenu(menu, '/code-review ').hint, '/code-review — 代码评审');
   // No menu once arguments are typed, for ordinary text, or before the list has loaded.
   for (const text of ['/goal 跑测试', 'hello /co', '', 'co']) assert.deepEqual(slashMenu(menu, text), { items: [], hint: null }, text);
   assert.deepEqual(slashMenu(undefined, '/co'), { items: [], hint: null });

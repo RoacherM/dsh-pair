@@ -14209,7 +14209,13 @@ function deriveKeys({ dhEpD, dhEpEd, dhPEd, P, Ep, D, Ed }) {
   const sasNum = (sasHash[0] << 24 | sasHash[1] << 16 | sasHash[2] << 8 | sasHash[3]) >>> 0;
   return { c2s: k.slice(0, 32), s2c: k.slice(32, 64), sas: String(sasNum % 1e6).padStart(6, "0") };
 }
-var dh = (secretKey, publicKey) => import_tweetnacl.default.scalarMult(secretKey, publicKey);
+var dh = (secretKey, publicKey) => {
+  const out = import_tweetnacl.default.scalarMult(secretKey, publicKey);
+  let acc = 0;
+  for (let i = 0; i < out.length; i++) acc |= out[i];
+  if (acc === 0) throw new Error("invalid low-order public key");
+  return out;
+};
 var Cipher = class _Cipher {
   constructor(sendKey, recvKey) {
     this.sendKey = sendKey;
@@ -14277,8 +14283,7 @@ function createAway({ ctx, state, config, log = () => {
   const pending = /* @__PURE__ */ new Map();
   const sessionIdOf = (agent) => agent?.session?.id ?? agent?.id;
   const paired = () => state.devices().length > 0;
-  const active = () => state.away.on && paired();
-  const sharing = () => !state.away.on && paired() && config.answerOnPhone !== false;
+  const mirrored = () => paired() && (state.away.on || config.answerOnPhone !== false);
   function presetOf(session) {
     try {
       return ctx.permissionPresets.current(session);
@@ -14321,7 +14326,13 @@ function createAway({ ctx, state, config, log = () => {
         }
       }
       await state.setAway({ on: false, restore: {} });
-      for (const item of [...pending.values()]) if (!item.shared) settle(item.id, item.kind === "approval" ? "rejected" : null, "away-off");
+      for (const item of [...pending.values()]) {
+        if (!item.shared || item.phoneOnly) settle(item.id, item.kind === "approval" ? "rejected" : null, "away-off");
+        else if (item.timer) {
+          clearTimeout(item.timer);
+          item.timer = void 0;
+        }
+      }
     }
     onChange();
     return view();
@@ -14336,7 +14347,7 @@ function createAway({ ctx, state, config, log = () => {
     });
   });
   function publicItem(item) {
-    const { resolve, reject, timer, cleanup, ...rest } = item;
+    const { resolve, reject, timer, cleanup, pushed, phoneOnly, ...rest } = item;
     return rest;
   }
   function drop(id) {
@@ -14356,6 +14367,8 @@ function createAway({ ctx, state, config, log = () => {
     return true;
   }
   function notifyPhones(item) {
+    if (item.pushed) return;
+    item.pushed = true;
     const body2 = item.kind === "approval" ? `${item.toolName}${item.reason ? `\uFF1A${item.reason}` : ""}` : item.questions?.[0]?.question ?? "\u6709\u4E00\u4E2A\u95EE\u9898\u9700\u8981\u56DE\u7B54";
     const title = item.sessionTitle ?? "\u4F1A\u8BDD";
     notify({
@@ -14365,10 +14378,10 @@ function createAway({ ctx, state, config, log = () => {
       tag: `pending-${item.id}`,
       sessionId: item.sessionId,
       pendingId: item.id
-    }).catch(() => {
+    }, { includeOnline: true }).catch(() => {
     });
   }
-  function enqueue(item, signal, { push = true } = {}) {
+  function enqueue(item, signal, { push = false, timeout = 0 } = {}) {
     pending.set(item.id, item);
     const abort = () => settle(item.id, item.kind === "approval" ? "cancelled" : null, "aborted");
     if (signal) {
@@ -14379,6 +14392,7 @@ function createAway({ ctx, state, config, log = () => {
       signal.addEventListener("abort", abort, { once: true });
       item.cleanup = () => signal.removeEventListener("abort", abort);
     }
+    if (timeout > 0) item.timer = setTimeout(() => settle(item.id, "rejected", "timeout"), timeout);
     onChange();
     titleOf(item.sessionId).then((title) => {
       if (title) {
@@ -14388,7 +14402,7 @@ function createAway({ ctx, state, config, log = () => {
       if (push && pending.has(item.id)) notifyPhones(item);
     });
   }
-  function share(item, req, next, noPrompt) {
+  function share(item, req, next, noPrompt, { push = false, timeout = 0 } = {}) {
     const signal = req.signal;
     const answered = new AbortController();
     try {
@@ -14407,7 +14421,7 @@ function createAway({ ctx, state, config, log = () => {
           reject(error);
         }
       });
-      enqueue(item, signal, { push: false });
+      enqueue(item, signal, { push, timeout });
       Promise.resolve().then(next).then(
         (value) => noPrompt(value, void 0) ? phonesOnly(item) : drop(item.id) && resolve(value),
         (error) => noPrompt(void 0, error) ? phonesOnly(item) : drop(item.id) && reject(error)
@@ -14416,7 +14430,8 @@ function createAway({ ctx, state, config, log = () => {
   }
   function phonesOnly(item) {
     if (!pending.has(item.id)) return;
-    if (item.kind === "approval") item.timer = setTimeout(() => settle(item.id, "rejected", "timeout"), approvalTimeoutMs);
+    item.phoneOnly = true;
+    if (item.kind === "approval" && !item.timer) item.timer = setTimeout(() => settle(item.id, "rejected", "timeout"), approvalTimeoutMs);
     notifyPhones(item);
   }
   const approvalItem = (req) => ({
@@ -14437,19 +14452,16 @@ function createAway({ ctx, state, config, log = () => {
     questions: (req.questions ?? []).map((q) => ({ id: q.id, question: q.question, header: q.header, detail: q.detail, options: q.options, multiSelect: q.multiSelect }))
   });
   ctx.on("approval/request", function onApproval(req, next) {
-    if (sharing()) return share(approvalItem(req), req, next, (value) => value === "unavailable");
-    if (!active()) return next();
-    return new Promise((resolve) => {
-      const item = { ...approvalItem(req), resolve };
-      item.timer = setTimeout(() => settle(item.id, "rejected", "timeout"), approvalTimeoutMs);
-      enqueue(item, req.signal);
+    if (!mirrored()) return next();
+    return share(approvalItem(req), req, next, (value) => value === "unavailable", {
+      push: state.away.on,
+      timeout: state.away.on ? approvalTimeoutMs : 0
     });
   }, true);
   ctx.on("user-questions/request", function onQuestion(req, next) {
-    if (sharing()) return share(questionItem(req), req, next, (value, error) => error?.code === "NO_PROVIDER");
-    if (!active()) return next();
-    return new Promise((resolve, reject) => {
-      enqueue({ ...questionItem(req), resolve, reject }, req.signal);
+    if (!mirrored()) return next();
+    return share(questionItem(req), req, next, (value, error) => error?.code === "NO_PROVIDER", {
+      push: state.away.on
     });
   }, true);
   ctx.effect(() => () => {
@@ -14483,7 +14495,7 @@ function createAway({ ctx, state, config, log = () => {
 }
 
 // src/host/commands.js
-var DEFAULT_PHONE_COMMANDS = ["compact", "goal", "plan", "export"];
+var DEFAULT_PHONE_COMMANDS = ["compact", "goal", "plan"];
 var COMMAND_LINE = /^\/([a-z0-9_-]+)(?:\s|$)/;
 var RUN_TIMEOUT_MS = 12e4;
 function createCommands({ ctx, config = {} }) {
@@ -14837,7 +14849,18 @@ function createUploads({ now = () => Date.now() } = {}) {
       upload = { mediaType, name: p.name ? String(p.name).slice(0, 120) : void 0, total, parts: [], received: 0, touched: now() };
       uploads.set(id, upload);
     }
-    if (Number(p.offset ?? 0) !== upload.received) throw new Error(`\u4E0A\u4F20\u987A\u5E8F\u9519\u8BEF\uFF1A\u671F\u671B\u504F\u79FB ${upload.received}`);
+    const offset = Number(p.offset ?? 0);
+    if (offset < upload.received) {
+      const end = offset + data.length;
+      if (end > upload.received) throw new Error(`\u4E0A\u4F20\u987A\u5E8F\u9519\u8BEF\uFF1A\u671F\u671B\u504F\u79FB ${upload.received}`);
+      const stored = Buffer.concat(upload.parts);
+      if (end <= stored.length && stored.subarray(offset, end).equals(data)) {
+        upload.touched = now();
+        return { id, received: upload.received, done: upload.received === upload.total };
+      }
+      throw new Error(`\u4E0A\u4F20\u987A\u5E8F\u9519\u8BEF\uFF1A\u504F\u79FB ${offset} \u5904\u7684\u5185\u5BB9\u4E0E\u4E4B\u524D\u4E0D\u540C`);
+    }
+    if (offset !== upload.received) throw new Error(`\u4E0A\u4F20\u987A\u5E8F\u9519\u8BEF\uFF1A\u671F\u671B\u504F\u79FB ${upload.received}`);
     if (upload.received + data.length > upload.total) {
       uploads.delete(id);
       throw new Error("\u4E0A\u4F20\u7684\u6570\u636E\u8D85\u8FC7\u58F0\u660E\u7684\u5927\u5C0F");
@@ -15023,6 +15046,7 @@ function createPhones({ ctx, state, pairing, away, push, images, commands, link:
     peer.device = device;
     peer.stage = "ready";
     await state.updateDevice(device.id, { lastSeen: Date.now() });
+    if (!peers.has(peer.cid)) return;
     send(peer, {
       type: "ready",
       paired,
@@ -15131,6 +15155,7 @@ function createPhones({ ctx, state, pairing, away, push, images, commands, link:
     clearTimeout(peer.watch?.liveTimer);
     clearTimeout(peer.watch?.statsTimer);
     peer.watch = null;
+    peer.images.clear();
   }
   async function watch(peer, sessionId) {
     stopWatch(peer);
@@ -15254,6 +15279,7 @@ function createPhones({ ctx, state, pairing, away, push, images, commands, link:
       beforeSeq,
       turnWindow: WATCH_WINDOW
     }, AbortSignal.timeout(2e4));
+    if (!peers.has(peer.cid)) throw new Error("\u8FDE\u63A5\u5DF2\u65AD\u5F00");
     return { items: share(peer, projectRecords(page.records)), hasMore: page.hasMore, firstSeq: page.records?.[0]?.event?.seq ?? null };
   }
   return {
@@ -15273,12 +15299,34 @@ function createPhones({ ctx, state, pairing, away, push, images, commands, link:
 
 // src/host/push.js
 var import_web_push = __toESM(require_src2(), 1);
+var ALLOWED_PUSH_HOSTS = /* @__PURE__ */ new Set([
+  "web.push.apple.com",
+  "fcm.googleapis.com",
+  "updates.push.services.mozilla.com",
+  "wns2-par02p.notify.windows.com"
+  // Microsoft WNS uses per-tenant subdomains of notify.windows.com
+]);
+function isAllowedEndpoint(endpoint) {
+  try {
+    const url = new URL(endpoint);
+    if (url.protocol !== "https:") return false;
+    const host = url.hostname.toLowerCase();
+    if (ALLOWED_PUSH_HOSTS.has(host)) return true;
+    return host.endsWith(".notify.windows.com");
+  } catch {
+    return false;
+  }
+}
 function createPush({ state, log = () => {
 }, isOnline = () => false }) {
   const vapid = state.vapid;
   const details = { subject: "mailto:dsh-pair@localhost.invalid", publicKey: vapid.publicKey, privateKey: vapid.privateKey };
   async function sendTo(device, payload) {
     if (!device.push?.endpoint) return { sent: false, reason: "no-subscription" };
+    if (!isAllowedEndpoint(device.push.endpoint)) {
+      log(`dsh-pair: \u62D2\u7EDD\u63A8\u9001\u5230\u672A\u77E5\u670D\u52A1\u300C${device.push.endpoint.slice(0, 60)}\u2026\u300D`);
+      return { sent: false, reason: "unknown-push-service" };
+    }
     try {
       await import_web_push.default.sendNotification(device.push, JSON.stringify(payload), {
         vapidDetails: details,
@@ -15345,9 +15393,12 @@ function createRelayLink({ relayUrl, desktopId, signKeys, log = () => {
     }
     ws = socket;
     socket.onopen = () => {
-      attempt = 0;
       lastHeard = Date.now();
       setStatus("online");
+      const stableTimer = setTimeout(() => {
+        attempt = 0;
+      }, 3e4);
+      socket.addEventListener("close", () => clearTimeout(stableTimer), { once: true });
       clearInterval(pingTimer);
       pingTimer = setInterval(() => {
         if (Date.now() - lastHeard > DEAD_MS) {
@@ -15389,6 +15440,11 @@ function createRelayLink({ relayUrl, desktopId, signKeys, log = () => {
       clearInterval(pingTimer);
       dropClients();
       if (event.code === 1008 || /auth failed/.test(event.reason ?? "")) log(`dsh-pair: \u4E2D\u7EE7\u62D2\u7EDD\u4E86\u8FDE\u63A5\uFF1A${event.reason}`);
+      if (event.code === 4e3) {
+        log(`dsh-pair: \u53E6\u4E00\u4E2A\u684C\u9762\u5B9E\u4F8B\u63A5\u7BA1\u4E86\u4E2D\u7EE7\u8FDE\u63A5\uFF0C\u672C\u5B9E\u4F8B\u4E0D\u518D\u81EA\u52A8\u91CD\u8FDE`);
+        setStatus("offline", event.reason ?? "replaced");
+        return;
+      }
       setStatus(stopped ? "stopped" : "offline", event.reason);
       schedule();
     };
@@ -15441,6 +15497,8 @@ var json = (value, status = 200) => new Response(JSON.stringify(value), {
   headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
 });
 async function body(request) {
+  const type = request.headers.get("content-type") ?? "";
+  if (!type.toLowerCase().startsWith("application/json")) return {};
   try {
     return await request.json();
   } catch {
@@ -15502,8 +15560,8 @@ function registerRoutes(ctx, { ready, changes }) {
     ["POST", "/api/pair/revoke", async (request) => {
       const rt = await ready;
       const { deviceId } = await body(request);
-      rt.phones.kickDevice(deviceId, "\u8FD9\u53F0\u8BBE\u5907\u5DF2\u5728\u7535\u8111\u4E0A\u88AB\u79FB\u9664");
       await rt.state.removeDevice(deviceId);
+      rt.phones.kickDevice(deviceId, "\u8FD9\u53F0\u8BBE\u5907\u5DF2\u5728\u7535\u8111\u4E0A\u88AB\u79FB\u9664");
       changes.bump();
       return json(await view());
     }],
@@ -15677,7 +15735,7 @@ function apply(ctx, config = {}) {
         phones?.broadcast("pending", { pending: away.pending(), away: away.view() });
       },
       titleOf: (id) => phones?.titleOf(id) ?? Promise.resolve(void 0),
-      notify: (payload) => push.notify(payload)
+      notify: (payload, opts) => push.notify(payload, opts)
     });
     const images = createImages({ attachments: () => ctx.get?.("attachments") });
     const commands = createCommands({ ctx, config });

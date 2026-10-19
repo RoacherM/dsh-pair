@@ -40,11 +40,11 @@ cd plugin && NODE_PATH=../node_modules node build.mjs # 构建插件
 
 ## 离开模式
 
-开启后，当前运行的会话（以及离开期间新建的会话）会切到 `workspace-write` 预设（`approval: ask`），原预设记录下来，关闭时恢复。插件以 prepend 方式监听 `approval/request` 和 `user-questions/request`：请求进入待处理队列，推送到手机，由已配对设备或电脑「远程控制」页中先作答的一方决定。审批 30 分钟无人处理即自动拒绝。关闭离开模式时，离开期间只交给手机的请求退回 DSH 自己的界面。
+开启后，当前运行的会话（以及离开期间新建的会话）会切到 `workspace-write` 预设（`approval: ask`），原预设记录下来，关闭时恢复。插件以 prepend 方式监听 `approval/request` 和 `user-questions/request`：请求同时进入 DSH 自己的弹窗和待处理队列，并推送到手机。电脑上的弹窗（或「远程控制」页）和手机，哪边先答算哪边；手机先答时，插件通过请求的 signal 关掉 DSH 的弹窗。DSH 没有窗口能显示时，只有手机能答。审批 30 分钟无人处理即自动拒绝。关闭离开模式时，只在手机上等待的请求会结束（审批按拒绝，提问提示回电脑回答）；已经弹在电脑上的请求保留，但 30 分钟超时不再生效。
 
 不开离开模式时（且已配对设备），审批和提问照常弹在 DSH 界面上，同时也出现在手机上，不推送。哪边先答算哪边；手机先答时，插件通过请求的 signal 关掉 DSH 的弹窗。DSH 没有界面能显示（没有连着的窗口）时，只能在手机上处理：推送到手机，审批同样 30 分钟超时拒绝。`answerOnPhone: false` 关掉这一行为。
 
-配置项（profile patch 的 `dsh-pair` 行）：`relayUrl`、`answerOnPhone`（默认 true）、`awayPreset`（默认 `workspace-write`）、`approvalTimeoutMinutes`（默认 30）、`notifyAfterSeconds`（运行超过这个时长才推送「已完成」，默认 20）、`phoneCommands`（手机能运行的斜杠命令，默认 `[compact, goal, plan, export]`）。
+配置项（profile patch 的 `dsh-pair` 行）：`relayUrl`、`answerOnPhone`（默认 true）、`awayPreset`（默认 `workspace-write`）、`approvalTimeoutMinutes`（默认 30）、`notifyAfterSeconds`（运行超过这个时长才推送「已完成」，默认 20）、`phoneCommands`（手机能运行的斜杠命令，默认 `[compact, goal, plan]`；`export` 不在默认里，避免离开时把整段会话导到手机剪贴板，需要时写成 `phoneCommands: [compact, goal, plan, export]`）。
 
 ## 斜杠命令
 

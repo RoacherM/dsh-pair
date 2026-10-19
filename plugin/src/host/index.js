@@ -49,7 +49,7 @@ export function apply(ctx, config = {}) {
       ctx, state, config, log,
       onChange: () => { changes.bump(); phones?.broadcast('pending', { pending: away.pending(), away: away.view() }); },
       titleOf: (id) => phones?.titleOf(id) ?? Promise.resolve(undefined),
-      notify: (payload) => push.notify(payload),
+      notify: (payload, opts) => push.notify(payload, opts),
     });
     // Looked up per request: the attachments service is optional and may arrive after this plugin.
     const images = createImages({ attachments: () => ctx.get?.('attachments') });

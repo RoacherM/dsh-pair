@@ -348,6 +348,10 @@ document.addEventListener('drop', (e) => {
 });
 
 // ------------------------------------------------------------------ storage ----
+// The device keypair lives in localStorage, which any script on this origin can read. That is
+// acceptable here: the origin is the relay we just paired with, and the same origin already
+// serves app.js — a same-origin attacker could exfiltrate the key from memory just as easily.
+// The pairing link and E2E handshake still protect the channel itself.
 const STORE_KEY = 'dsh-pair/v1';
 const load = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY)) ?? {}; } catch { return {}; } };
 const save = (value) => localStorage.setItem(STORE_KEY, JSON.stringify(value));
@@ -372,6 +376,7 @@ const app = {
   sessions: [],
   workspaces: [],
   pending: [],
+  pendingAnswers: new Map(), // item.id → Map(q.id → {id, selected, custom}); survives re-renders
   away: { on: false },
   view: { name: 'home' },
   session: null, // { id, title, items, live, running, hasMore, firstSeq, tools: Map }
@@ -444,11 +449,18 @@ function onEvent(msg) {
       renderHomeList();
       break;
     }
-    case 'pending':
+    case 'pending': {
       app.pending = msg.pending; app.away = msg.away ?? app.away;
-      if (msg.pending.length) vibrate(20);
+      // Forget answer drafts for items that are gone (answered elsewhere, expired, cancelled).
+      const alive = new Set(msg.pending.map((p) => p.id));
+      for (const id of [...app.pendingAnswers.keys()]) if (!alive.has(id)) app.pendingAnswers.delete(id);
+      // Only buzz when something relevant to the current screen appeared (the session page
+      // shows only its own pending; other pages show all of them).
+      const relevant = app.view?.name === 'session' ? msg.pending.filter((p) => p.sessionId === app.session?.id) : msg.pending;
+      if (relevant.length) vibrate(20);
       renderPending(); renderAway();
       break;
+    }
     case 'items':
       if (app.session?.id === msg.sessionId) { for (const item of msg.items) addItem(item, true); }
       break;
@@ -471,7 +483,10 @@ function onEvent(msg) {
       if (app.session?.id === msg.sessionId) toast(`出错：${msg.message}`, 'err');
       break;
     case 'watch-ended':
-      if (app.session?.id === msg.sessionId) setTimeout(() => app.view.name === 'session' && openSession(msg.sessionId, { silent: true }), 1500);
+      if (app.session?.id === msg.sessionId) setTimeout(() => {
+        // The user may have moved on to another session during the delay; only re-open the same one.
+        if (app.view.name === 'session' && app.session?.id === msg.sessionId) openSession(msg.sessionId, { silent: true });
+      }, 1500);
       break;
   }
 }
@@ -642,7 +657,12 @@ async function toggleAway() {
 function renderPending() {
   const el = $('#pending');
   if (!el) return;
-  fill(el, ...app.pending.map((item) => pendingCard(item)));
+  // The session page embeds `#pending` between the transcript and the composer; only that
+  // session's approvals/questions belong there. Home and the new-session page show all of them.
+  const items = app.view?.name === 'session'
+    ? app.pending.filter((p) => p.sessionId === app.session?.id)
+    : app.pending;
+  fill(el, ...items.map((item) => pendingCard(item)));
 }
 
 function pendingCard(item) {
@@ -656,15 +676,21 @@ function pendingCard(item) {
         h('button', { class: 'btn primary', onClick: () => answer(item.id, { decision: 'allow' }) }, '允许一次')),
       h('button', { class: 'link-btn', onClick: () => openSession(item.sessionId) }, '查看会话 ›'));
   }
-  const answers = new Map(item.questions.map((q) => [q.id, { id: q.id, selected: [], custom: '' }]));
+  // Answers live in app.pendingAnswers so a re-render (any event rebuilds the card) keeps them.
+  let answers = app.pendingAnswers.get(item.id);
+  if (!answers) {
+    answers = new Map(item.questions.map((q) => [q.id, { id: q.id, selected: [], custom: '' }]));
+    app.pendingAnswers.set(item.id, answers);
+  }
   return h('div', { class: 'pcard' },
     h('div', { class: 'pcard-head' }, h('span', { class: 'tag' }, '需要回答'), h('span', { class: 'muted' }, title)),
     ...item.questions.map((q) => {
       const a = answers.get(q.id);
       const opts = h('div', { class: 'opts' }, ...(q.options ?? []).map((o) => {
-        const b = h('button', { class: 'opt', onClick: () => {
+        const isOn = a.selected.includes(o.label);
+        const b = h('button', { class: `opt${isOn ? ' on' : ''}`, onClick: () => {
           if (q.multiSelect) { a.selected.includes(o.label) ? a.selected.splice(a.selected.indexOf(o.label), 1) : a.selected.push(o.label); b.classList.toggle('on'); }
-          else { a.selected = [o.label]; for (const x of opts.children) x.classList.remove('on'); b.classList.add('on'); }
+          else { a.selected = a.selected.includes(o.label) ? [] : [o.label]; for (const x of opts.children) x.classList.remove('on'); if (a.selected.length) b.classList.add('on'); }
         } }, h('b', {}, o.label), o.description ? h('span', {}, o.description) : null);
         return b;
       }));
@@ -673,13 +699,13 @@ function pendingCard(item) {
         h('p', { class: 'q-text' }, q.question),
         q.detail ? h('p', { class: 'muted small' }, q.detail) : null,
         opts,
-        h('input', { class: 'input', placeholder: q.options?.length ? '或输入其他回答' : '输入回答', onInput: (e) => { a.custom = e.target.value; } }));
+        h('input', { class: 'input', placeholder: q.options?.length ? '或输入其他回答' : '输入回答', value: a.custom, onInput: (e) => { a.custom = e.target.value; } }));
     }),
     h('div', { class: 'pcard-actions' }, h('button', { class: 'btn primary', onClick: () => answer(item.id, { answers: [...answers.values()] }) }, '提交回答')));
 }
 
 async function answer(id, payload) {
-  try { await app.link.rpc('pending.answer', { id, ...payload }); vibrate(15); app.pending = app.pending.filter((x) => x.id !== id); renderPending(); }
+  try { await app.link.rpc('pending.answer', { id, ...payload }); vibrate(15); app.pendingAnswers.delete(id); app.pending = app.pending.filter((x) => x.id !== id); renderPending(); }
   catch (e) { toast(e.message, 'err'); }
 }
 
@@ -985,8 +1011,6 @@ function renderSessionChrome() {
   renderModelPill();
   renderSendState();
   renderPending();
-  const pend = $('#pending');
-  if (pend) for (const card of [...pend.children]) card.hidden = false;
 }
 
 function renderModelPill() {
@@ -1172,10 +1196,12 @@ async function loadOlder() {
   const before = wrap.scrollHeight;
   try {
     const r = await app.link.rpc('session.older', { sessionId: s.id, beforeSeq: s.firstSeq });
+    // The user may have switched sessions while the page was in flight; don't splice A's history into B.
+    if (app.session !== s) return;
     s.hasMore = r.hasMore; s.firstSeq = r.firstSeq ?? s.firstSeq;
     const frag = document.createDocumentFragment();
     for (const item of r.items) { const node = itemNode(item); if (node) appendNode(frag, node); }
-    $('#log').prepend(frag);
+    $('#log')?.prepend(frag);
     for (const item of r.items) {
       if (item.k === 'result') applyResult(item);
       else if (item.k === 'command-done') applyCommandDone(item);
@@ -1191,20 +1217,22 @@ function itemNode(item) {
     case 'user': {
       const bubble = h('div', { class: 'bubble' }, item.text,
         item.pics?.length ? picsNode(item.pics) : item.images ? h('span', { class: 'muted small' }, ` [${item.images} 张图片]`) : null);
-      return h('div', { class: 'msg user' }, bubble,
+      return h('div', { class: 'msg user', 'data-time': item.time ?? '' }, bubble,
         item.source && item.source !== 'user' ? h('div', { class: 'src' }, item.source === 'schedule' ? '定时任务' : item.source) : null);
     }
     case 'assistant':
       return replyNode(item.text);
     case 'tool': {
-      const node = h('details', { class: 'tool', 'data-call': item.callId },
-        h('summary', {}, h('span', { class: 'tool-state' }), h('b', {}, item.name), h('span', { class: 'tool-sum' }, item.summary)),
+      const kind = toolKind(item.name);
+      const node = h('details', { class: 'tool', 'data-call': item.callId, 'data-kind': kind },
+        h('summary', {}, h('b', { class: 'tool-verb' }, TOOL_KINDS[kind]?.verb ?? item.name), h('span', { class: 'tool-sum' }, item.summary)),
         h('pre', { class: 'tool-out' }, '…'));
       s?.tools.set(item.callId, node);
       return node;
     }
     case 'end':
-      return item.reason === 'completed' ? h('div', { class: 'turn-end' }) : h('div', { class: 'turn-end note-line' }, item.reason === 'aborted' ? '已停止' : `回合结束：${item.reason}`);
+      return h('div', { class: 'turn-end', 'data-time': item.time ?? '', 'data-reason': item.reason },
+        h('span', { class: 'turn-note' }, item.reason === 'completed' ? '' : item.reason === 'aborted' ? '已停止' : `回合结束：${item.reason}`));
     case 'command':
       return h('div', { class: 'cmd', 'data-cmd': item.commandId },
         h('div', { class: 'cmd-line' }, h('span', { class: 'tool-state' }), h('b', {}, `/${item.name}`), item.args ? h('span', { class: 'tool-sum' }, item.args) : null),
@@ -1235,13 +1263,68 @@ function applyCommandDone(item) {
   $('.cmd-out', node).textContent = item.text || (item.error ? '失败' : '');
 }
 
-/** Consecutive tool calls fold into one row: "4 个步骤 · <latest>", opened on tap. */
+// ---- tool rows, as in the Claude app: plain lines, "运行了 2 个命令" folding the run of calls
+/** verb: one call ("运行 <summary>"); unit/past: the folded count ("运行了 2 个命令"). */
+const TOOL_KINDS = {
+  run:    { verb: '运行',  past: '运行了',  unit: '个命令' },
+  read:   { verb: '读取',  past: '读取了',  unit: '个文件' },
+  edit:   { verb: '编辑',  past: '编辑了',  unit: '个文件' },
+  write:  { verb: '写入',  past: '写入了',  unit: '个文件' },
+  search: { verb: '搜索',  past: '搜索了',  unit: '次' },
+  list:   { verb: '查找',  past: '查找了',  unit: '次' },
+  web:    { verb: '访问',  past: '访问了',  unit: '个网页' },
+  agent:  { verb: '子代理', past: '启动了', unit: '个子代理' },
+  todo:   { verb: '待办',  past: '更新了',  unit: '次待办' },
+};
+function toolKind(name) {
+  const n = String(name ?? '').toLowerCase().split('__').pop();
+  if (/^(bash|shell|exec|run|terminal|command)/.test(n)) return 'run';
+  if (/^(read|view|cat|open)/.test(n)) return 'read';
+  if (/(edit|patch|replace)/.test(n)) return 'edit';
+  if (/^(write|create)/.test(n)) return 'write';
+  if (/^(grep|search|rg|find_in)/.test(n) && !/web/.test(n)) return 'search';
+  if (/^(glob|ls|list|find)/.test(n)) return 'list';
+  if (/(web|fetch|url|browser)/.test(n)) return 'web';
+  if (/(agent|task|delegate|fork)/.test(n)) return 'agent';
+  if (/todo/.test(n)) return 'todo';
+  return null;
+}
+function stepsLabel(tools) {
+  const counts = new Map();
+  for (const t of tools) { const kind = t.dataset.kind || '?'; counts.set(kind, (counts.get(kind) ?? 0) + 1); }
+  if (counts.has('?') || counts.size > 3) return `${tools.length} 个步骤`;
+  return [...counts].map(([kind, n]) => `${TOOL_KINDS[kind].past} ${n} ${TOOL_KINDS[kind].unit}`).join('，');
+}
+
+const timeOf = (v) => (typeof v === 'number' ? v : Date.parse(v ?? '')) || 0;
+function workedFor(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} 秒`;
+  if (s < 3600) return `${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+  return `${Math.floor(s / 3600)} 小时 ${Math.floor((s % 3600) / 60)} 分`;
+}
+function finishTurn(parent, end) {
+  let start = 0;
+  for (let el = parent.lastElementChild; el && !el.classList.contains('turn-end'); el = el.previousElementSibling) {
+    if (el.classList.contains('user')) start = timeOf(el.dataset.time) || start;
+  }
+  const stop = timeOf(end.dataset.time);
+  const note = $('.turn-note', end);
+  if (end.dataset.reason === 'completed' && start && stop > start) note.textContent = `已工作 ${workedFor(stop - start)}`;
+  const last = parent.lastElementChild;
+  const actions = last?.classList.contains('assistant') ? $('.msg-actions', last) : null;
+  if (actions) end.prepend(actions);
+  if (!note.textContent && !actions) end.classList.add('bare');
+}
+
 function appendNode(parent, node) {
+  if (node.classList?.contains('turn-end')) { finishTurn(parent, node); parent.append(node); return; }
   if (!node.classList?.contains('tool')) { parent.append(node); return; }
   let group = parent.lastElementChild;
   if (!group?.classList.contains('steps')) {
-    group = h('details', { class: 'steps' },
-      h('summary', {}, h('span', { class: 'tool-state' }), h('b', { class: 'steps-label' }), h('span', { class: 'tool-sum' })),
+    group = h('div', { class: 'steps' },
+      h('button', { class: 'steps-head', onClick: () => group.classList.toggle('open') },
+        h('span', { class: 'steps-label' }), h('span', { class: 'steps-err' }), icon('chev')),
       h('div', { class: 'steps-list' }));
     parent.append(group);
   }
@@ -1251,13 +1334,12 @@ function appendNode(parent, node) {
 
 function updateSteps(group) {
   const tools = [...group.querySelectorAll('.steps-list > .tool')];
-  const last = tools.at(-1);
-  $('.steps-label', group).textContent = tools.length === 1 ? $('summary b', last).textContent : `${tools.length} 个步骤`;
-  $(':scope > summary .tool-sum', group).textContent = $('.tool-sum', last).textContent;
-  const failed = tools.some((t) => t.classList.contains('err'));
+  const failed = tools.filter((t) => t.classList.contains('err')).length;
   const running = tools.some((t) => !t.classList.contains('done') && !t.classList.contains('err'));
-  group.classList.toggle('err', failed && !running);
-  group.classList.toggle('done', !failed && !running);
+  group.classList.toggle('multi', tools.length > 1);
+  group.classList.toggle('running', running);
+  $('.steps-label', group).textContent = stepsLabel(tools);
+  $('.steps-err', group).textContent = failed ? `${failed} 个失败` : '';
 }
 
 function addItem(item, live) {

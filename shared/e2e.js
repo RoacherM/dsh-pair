@@ -74,7 +74,20 @@ function deriveKeys({ dhEpD, dhEpEd, dhPEd, P, Ep, D, Ed }) {
   return { c2s: k.slice(0, 32), s2c: k.slice(32, 64), sas: String(sasNum % 1_000_000).padStart(6, '0') };
 }
 
-const dh = (secretKey, publicKey) => nacl.scalarMult(secretKey, publicKey);
+/**
+ * X25519 with low-order point rejection. A low-order public key (all zeros being the simplest)
+ * makes the shared secret all zeros, which an attacker who sent that key can reproduce — they
+ * would decrypt everything and forge the first "proof of key" frame. Reject any all-zero result.
+ * (nacl.scalarMult itself accepts these; RFC 7748 §6.1 says implementations MAY check, and for a
+ * pairing protocol that registers the peer's static key we must.)
+ */
+const dh = (secretKey, publicKey) => {
+  const out = nacl.scalarMult(secretKey, publicKey);
+  let acc = 0;
+  for (let i = 0; i < out.length; i++) acc |= out[i];
+  if (acc === 0) throw new Error('invalid low-order public key');
+  return out;
+};
 
 class Cipher {
   constructor(sendKey, recvKey) {

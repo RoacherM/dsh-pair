@@ -24,6 +24,7 @@ export function createPairing({ relayUrl, desktopId, boxKeys, desktopName, onCha
       v: 1, r: origin.replace(/^http/, 'ws'), i: desktopId, k: b64(boxKeys.publicKey), t: token, n: desktopName(), e: expiresAt,
     });
     offer = { token, link, expiresAt };
+    // decide(false) here also resolves any pending confirmation request — the phone sees 'denied'.
     timer = setTimeout(() => { if (offer?.token === token) { offer = null; decide(false); onChange(); } }, OFFER_MS);
     onChange();
     return offer;

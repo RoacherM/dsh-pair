@@ -6,12 +6,12 @@
  *   restored when away mode goes OFF.
  * - While away and at least one device is paired, this plugin answers `approval/request` and
  *   `user-questions/request` itself (prepended, so it runs before the GUI forwarder): the request
- *   waits in the pending queue, the phones get a push, and whoever answers first — a phone or the
- *   pairing page on the desktop — settles it. Unanswered approvals are rejected after a timeout.
- * - Away OFF (and `answerOnPhone` not false): the request goes on to DSH's own prompt as usual and
- *   to the phones as well, without a push. The first answer wins; when a phone answers, DSH's prompt
- *   closes through the request's signal. When DSH has no prompt to show it (no window connected),
- *   only the phones can answer: they get a push, and approvals time out as in away mode.
+ *   goes to DSH's own prompt and to the phones (with a push). Whoever answers first — the desktop
+ *   or a phone — settles it; a phone's answer closes DSH's prompt through the request's signal.
+ *   Unanswered approvals are rejected after a timeout. When DSH has no prompt to show it (no
+ *   window connected), only the phones can answer.
+ * - Away OFF (and `answerOnPhone` not false): the same first-answer-wins mirroring, without a
+ *   push and without the away timeout.
  */
 import { randomUUID } from 'node:crypto';
 
@@ -22,8 +22,8 @@ export function createAway({ ctx, state, config, log = () => {}, onChange = () =
 
   const sessionIdOf = (agent) => agent?.session?.id ?? agent?.id;
   const paired = () => state.devices().length > 0;
-  const active = () => state.away.on && paired();
-  const sharing = () => !state.away.on && paired() && config.answerOnPhone !== false;
+  // Away mode always keeps the phones in the loop; at the desk `answerOnPhone` may turn that off.
+  const mirrored = () => paired() && (state.away.on || config.answerOnPhone !== false);
 
   function presetOf(session) {
     try { return ctx.permissionPresets.current(session); } catch { return undefined; }
@@ -60,7 +60,11 @@ export function createAway({ ctx, state, config, log = () => {}, onChange = () =
       }
       await state.setAway({ on: false, restore: {} });
       // Anything only the phones held goes back to the desktop: reject rather than hang forever.
-      for (const item of [...pending.values()]) if (!item.shared) settle(item.id, item.kind === 'approval' ? 'rejected' : null, 'away-off');
+      // Shared items whose desktop prompt is still up keep it, without away mode's timeout.
+      for (const item of [...pending.values()]) {
+        if (!item.shared || item.phoneOnly) settle(item.id, item.kind === 'approval' ? 'rejected' : null, 'away-off');
+        else if (item.timer) { clearTimeout(item.timer); item.timer = undefined; }
+      }
     }
     onChange();
     return view();
@@ -77,7 +81,7 @@ export function createAway({ ctx, state, config, log = () => {}, onChange = () =
   });
 
   function publicItem(item) {
-    const { resolve, reject, timer, cleanup, ...rest } = item;
+    const { resolve, reject, timer, cleanup, pushed, phoneOnly, ...rest } = item;
     return rest;
   }
 
@@ -101,17 +105,22 @@ export function createAway({ ctx, state, config, log = () => {}, onChange = () =
   }
 
   function notifyPhones(item) {
+    if (item.pushed) return;
+    item.pushed = true;
     const body = item.kind === 'approval'
       ? `${item.toolName}${item.reason ? `：${item.reason}` : ''}`
       : item.questions?.[0]?.question ?? '有一个问题需要回答';
     const title = item.sessionTitle ?? '会话';
+    // includeOnline: iOS suspends a backgrounded PWA without closing its socket, so the desktop
+    // still thinks the phone is online and would never push. The service worker dedupes by tag
+    // when the app is in the foreground, so an actually-open app is not double-notified.
     notify({
       title: item.kind === 'approval' ? `需要审批 · ${title}` : `需要回答 · ${title}`,
       body: body.slice(0, 160), urgent: true, tag: `pending-${item.id}`, sessionId: item.sessionId, pendingId: item.id,
-    }).catch(() => {});
+    }, { includeOnline: true }).catch(() => {});
   }
 
-  function enqueue(item, signal, { push = true } = {}) {
+  function enqueue(item, signal, { push = false, timeout = 0 } = {}) {
     pending.set(item.id, item);
     const abort = () => settle(item.id, item.kind === 'approval' ? 'cancelled' : null, 'aborted');
     if (signal) {
@@ -119,6 +128,7 @@ export function createAway({ ctx, state, config, log = () => {}, onChange = () =
       signal.addEventListener('abort', abort, { once: true });
       item.cleanup = () => signal.removeEventListener('abort', abort);
     }
+    if (timeout > 0) item.timer = setTimeout(() => settle(item.id, 'rejected', 'timeout'), timeout);
     onChange();
     titleOf(item.sessionId).then((title) => {
       if (title) { item.sessionTitle = title; onChange(); }
@@ -127,10 +137,12 @@ export function createAway({ ctx, state, config, log = () => {}, onChange = () =
   }
 
   /**
-   * Away mode off: pass the request on to DSH's prompt and offer it to the phones too.
+   * Pass the request on to DSH's prompt and offer it to the phones too; the first answer wins.
    * @param noPrompt - whether the rest of the waterfall settled only because no prompt could be shown.
+   * @param push - also send a phone notification (away mode).
+   * @param timeout - reject an unanswered approval after this many ms (away mode).
    */
-  function share(item, req, next, noPrompt) {
+  function share(item, req, next, noPrompt, { push = false, timeout = 0 } = {}) {
     const signal = req.signal;
     // Closes DSH's prompt once a phone has answered. A request that cannot take the combined signal
     // keeps its desktop prompt until the turn moves on; answering it then changes nothing.
@@ -142,17 +154,18 @@ export function createAway({ ctx, state, config, log = () => {}, onChange = () =
         resolve: (value) => { answered.abort(); resolve(value); },
         reject: (error) => { answered.abort(); reject(error); },
       });
-      enqueue(item, signal, { push: false });
+      enqueue(item, signal, { push, timeout });
       Promise.resolve().then(next).then(
         (value) => (noPrompt(value, undefined) ? phonesOnly(item) : drop(item.id) && resolve(value)),
         (error) => (noPrompt(undefined, error) ? phonesOnly(item) : drop(item.id) && reject(error)));
     });
   }
 
-  /** DSH could not show the request: it waits for a phone, as in away mode. */
+  /** DSH could not show the request: it waits for a phone, with away mode's approval timeout. */
   function phonesOnly(item) {
     if (!pending.has(item.id)) return;
-    if (item.kind === 'approval') item.timer = setTimeout(() => settle(item.id, 'rejected', 'timeout'), approvalTimeoutMs);
+    item.phoneOnly = true;
+    if (item.kind === 'approval' && !item.timer) item.timer = setTimeout(() => settle(item.id, 'rejected', 'timeout'), approvalTimeoutMs);
     notifyPhones(item);
   }
 
@@ -167,20 +180,17 @@ export function createAway({ ctx, state, config, log = () => {}, onChange = () =
   });
 
   ctx.on('approval/request', function onApproval(req, next) {
-    if (sharing()) return share(approvalItem(req), req, next, (value) => value === 'unavailable');
-    if (!active()) return next();
-    return new Promise((resolve) => {
-      const item = { ...approvalItem(req), resolve };
-      item.timer = setTimeout(() => settle(item.id, 'rejected', 'timeout'), approvalTimeoutMs);
-      enqueue(item, req.signal);
+    if (!mirrored()) return next();
+    return share(approvalItem(req), req, next, (value) => value === 'unavailable', {
+      push: state.away.on,
+      timeout: state.away.on ? approvalTimeoutMs : 0,
     });
   }, true);
 
   ctx.on('user-questions/request', function onQuestion(req, next) {
-    if (sharing()) return share(questionItem(req), req, next, (value, error) => error?.code === 'NO_PROVIDER');
-    if (!active()) return next();
-    return new Promise((resolve, reject) => {
-      enqueue({ ...questionItem(req), resolve, reject }, req.signal);
+    if (!mirrored()) return next();
+    return share(questionItem(req), req, next, (value, error) => error?.code === 'NO_PROVIDER', {
+      push: state.away.on,
     });
   }, true);
 

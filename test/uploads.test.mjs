@@ -33,7 +33,11 @@ test('incomplete, unknown or out-of-order uploads are refused; take removes noth
   const done = upload(store, bytes(10));
   const first = store.put({ offset: 0, total: 100, mediaType: 'image/png', data: b64(bytes(40)) });
   assert.equal(first.done, false);
-  assert.throws(() => store.put({ id: first.id, offset: 0, total: 100, data: b64(bytes(10)) }), /顺序/);
+  // Same bytes at a previously-acked offset are an idempotent retry; different bytes are an error.
+  const retry = store.put({ id: first.id, offset: 0, total: 100, data: b64(bytes(10)) });
+  assert.equal(retry.received, 40);
+  assert.equal(retry.done, false);
+  assert.throws(() => store.put({ id: first.id, offset: 0, total: 100, data: b64(bytes(10, 99)) }), /顺序|不同/);
   assert.throws(() => store.take([done, first.id]), /还没上传完/);
   assert.equal(store.take([done]).length, 1, 'the complete one is still there after the failed take');
   assert.throws(() => store.put({ id: 'nope', offset: 0, data: '' }), /过期/);

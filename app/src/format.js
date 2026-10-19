@@ -23,5 +23,9 @@ export function slashMenu(menu, text) {
   }
   const chosen = /^\/([a-z0-9_-]+) $/.exec(text);
   const command = chosen && menu?.commands?.find((c) => c.name === chosen[1]);
-  return { items: [], hint: command?.hint ? `/${command.name} ${command.hint}` : null };
+  if (command?.hint) return { items: [], hint: `/${command.name} ${command.hint}` };
+  // A skill has no hint; show its description so the user knows what `/name ` now targets.
+  const skill = chosen && menu?.skills?.find((s) => s.name === chosen[1]);
+  if (skill?.description) return { items: [], hint: `/${skill.name} — ${skill.description}` };
+  return { items: [], hint: null };
 }

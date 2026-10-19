@@ -30,6 +30,7 @@ const MAX_FRAME = 4 * 1024 * 1024;
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
 const DESKTOP_STALE_MS = 70_000; // three missed desktop pings
 const CLIENT_STALE_MS = 90_000; // background browser tabs may ping only once a minute
+const CLIENT_AUTH_MS = 30_000; // a client that hasn't proven itself by then is dropped
 
 const b64urlDecode = (s) => {
   const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4);
@@ -86,6 +87,7 @@ export class Room {
     // Overridable for local tests only (wrangler dev --var DESKTOP_STALE_MS:3000 …).
     this.desktopStaleMs = Number(env.DESKTOP_STALE_MS) || DESKTOP_STALE_MS;
     this.clientStaleMs = Number(env.CLIENT_STALE_MS) || CLIENT_STALE_MS;
+    this.clientAuthMs = Number(env.CLIENT_AUTH_MS) || CLIENT_AUTH_MS;
     state.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
@@ -98,6 +100,22 @@ export class Room {
 
   alive(ws, staleMs) {
     return Date.now() - this.lastHeard(ws) <= staleMs;
+  }
+
+  /**
+   * A client that has sent only auto-pongs and never a real frame might be an attacker holding
+   * one of the MAX_CLIENTS slots open (the relay cannot read the E2E-encrypted handshake, so it
+   * cannot check auth directly). Close any client that has not sent real data within CLIENT_AUTH_MS.
+   */
+  authenticate(ws) {
+    const meta = ws.deserializeAttachment();
+    if (meta?.role !== 'client' || meta.spoke) return;
+    if (Date.now() - (meta.since ?? 0) > this.clientAuthMs) {
+      try { ws.close(4003, 'client idle before first frame'); } catch {}
+      return;
+    }
+    // Check again later; cheap enough, and the DO is already awake for this socket.
+    setTimeout(() => { try { this.authenticate(ws); } catch {} }, this.clientAuthMs);
   }
 
   /** The seat: the newest desktop socket, if it is still pinging. Older ones are being replaced. */
@@ -126,9 +144,12 @@ export class Room {
       if (ws !== desktop && !this.alive(ws, this.desktopStaleMs)) { try { ws.close(4002, 'no ping'); } catch {} }
     }
     for (const ws of this.state.getWebSockets('client')) {
-      if (this.alive(ws, this.clientStaleMs)) continue;
-      try { ws.close(4002, 'no ping'); } catch {}
-      if (desktop) safeSend(desktop, JSON.stringify({ t: 'close', c: ws.deserializeAttachment()?.cid }));
+      const meta = ws.deserializeAttachment();
+      // A client that never sent a real frame and has been idle long enough is a slot-holder.
+      const idleTooLong = meta && !meta.spoke && Date.now() - (meta.since ?? 0) > this.clientAuthMs;
+      if (!idleTooLong && this.alive(ws, this.clientStaleMs)) continue;
+      try { ws.close(idleTooLong ? 4003 : 4002, idleTooLong ? 'no first frame' : 'no ping'); } catch {}
+      if (desktop) safeSend(desktop, JSON.stringify({ t: 'close', c: meta?.cid }));
     }
   }
 
@@ -155,7 +176,7 @@ export class Room {
       if (this.clients().length >= MAX_CLIENTS) return text('too many clients', 429);
       const cid = crypto.randomUUID();
       this.state.acceptWebSocket(server, ['client', `c:${cid}`]);
-      server.serializeAttachment({ role: 'client', cid, since: Date.now() });
+      server.serializeAttachment({ role: 'client', cid, since: Date.now(), spoke: false });
       const desktop = this.desktop();
       if (desktop) {
         safeSend(desktop, JSON.stringify({ t: 'open', c: cid }));
@@ -163,6 +184,8 @@ export class Room {
       } else {
         server.send('\u0000offline');
       }
+      // Drop the slot if it never sends real data (a pure slot-holder bypasses MAX_CLIENTS).
+      setTimeout(() => { try { this.authenticate(server); } catch {} }, this.clientAuthMs);
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -172,6 +195,8 @@ export class Room {
     if (message.length > MAX_FRAME) { ws.close(1009, 'frame too large'); return; }
     const meta = ws.deserializeAttachment();
     if (meta?.role === 'client') {
+      // First real frame from this client marks it as legitimate (no longer a slot-holder).
+      if (!meta.spoke) { meta.spoke = true; ws.serializeAttachment(meta); }
       const desktop = this.desktop();
       if (desktop) safeSend(desktop, JSON.stringify({ t: 'data', c: meta.cid, d: message }));
       else { safeSend(ws, '\u0000offline'); this.sweep(); }

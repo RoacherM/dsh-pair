@@ -6,8 +6,12 @@
  * Only commands named in `phoneCommands` may run from a phone; the check is here on the desktop,
  * not in the phone's menu. A line that names no registered command (e.g. `/skill-name …`, which
  * DSH expands itself) stays an ordinary prompt, as it does when DSH has no command registry.
+ *
+ * `/export` is intentionally not in the default list: it can leak the whole transcript to the
+ * phone's clipboard, and the phone may be out of the owner's hands (away mode is exactly when
+ * that happens). Opt in with `phoneCommands: [..., 'export']` if you want it.
  */
-export const DEFAULT_PHONE_COMMANDS = ['compact', 'goal', 'plan', 'export'];
+export const DEFAULT_PHONE_COMMANDS = ['compact', 'goal', 'plan'];
 
 const COMMAND_LINE = /^\/([a-z0-9_-]+)(?:\s|$)/;
 const RUN_TIMEOUT_MS = 120_000;

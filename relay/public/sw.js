@@ -1,6 +1,6 @@
 // DSH phone app service worker: app-shell cache + Web Push.
-const CACHE = 'dsh-pair-mv5dcnry';
-const SHELL = ['/', '/app.js?v=mv5dcnry', '/app.css?v=mv5dcnry', '/manifest.webmanifest', '/icon-180.png', '/icon-192.png'];
+const CACHE = 'dsh-pair-mv8czeyw';
+const SHELL = ['/', '/app.js?v=mv8czeyw', '/app.css?v=mv8czeyw', '/manifest.webmanifest', '/icon-180.png', '/icon-192.png'];
 
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {
@@ -19,9 +19,15 @@ self.addEventListener('fetch', (e) => {
 self.addEventListener('push', (e) => {
   let data = {};
   try { data = e.data?.json() ?? {}; } catch { data = { title: 'DSH', body: e.data?.text() ?? '' }; }
-  e.waitUntil(self.registration.showNotification(data.title ?? 'DSH', {
-    body: data.body ?? '', tag: data.tag, renotify: Boolean(data.urgent), icon: '/icon-192.png', badge: '/icon-192.png',
-    data: { sessionId: data.sessionId, pendingId: data.pendingId },
+  // The desktop now pushes even to devices it considers "online" (iOS suspends a backgrounded
+  // PWA without dropping its socket, so the desktop cannot tell it apart from a live one).
+  // Suppress the notification when the app is actually visible — it sees the event live.
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+    if (clients.some((c) => c.visibilityState === 'visible')) return;
+    return self.registration.showNotification(data.title ?? 'DSH', {
+      body: data.body ?? '', tag: data.tag, renotify: Boolean(data.urgent), icon: '/icon-192.png', badge: '/icon-192.png',
+      data: { sessionId: data.sessionId, pendingId: data.pendingId },
+    });
   }));
 });
 

@@ -134,3 +134,68 @@ test('switching away mode on and off leaves shared requests on the phone', async
   desktop.settle('allowed-once');
   assert.equal(await decision, 'allowed-once');
 });
+
+test('away on: the desktop prompt still shows, the phone is pushed, and the desktop can answer', async () => {
+  const { away, pushes, desktop, ask } = setup();
+  await away.set(true);
+  const decision = ask('approval/request', approval());
+  await tick();
+  assert.ok(desktop.seen, "away mode no longer hides DSH's own prompt");
+  assert.equal(away.pending().length, 1);
+  assert.equal(away.pending()[0].shared, true);
+  assert.equal(pushes.length, 1, 'the phone is notified');
+  desktop.settle('rejected');
+  assert.equal(await decision, 'rejected');
+  assert.equal(away.pending().length, 0);
+
+  const answer = ask('user-questions/request', question());
+  await tick();
+  assert.ok(desktop.seen, 'questions also reach the desktop');
+  assert.equal(pushes.length, 2);
+  desktop.settle({ answers: [{ id: 'q1', selected: ['B'] }] });
+  assert.deepEqual(await answer, { answers: [{ id: 'q1', selected: ['B'] }] });
+  assert.equal(away.pending().length, 0);
+});
+
+test('away on: the phone answers first, and the desktop prompt is closed', async () => {
+  const { away, desktop, ask } = setup();
+  await away.set(true);
+  const turn = new AbortController();
+  const decision = ask('approval/request', approval(turn.signal));
+  await tick();
+  const shown = desktop.seen.signal;
+  assert.equal(shown.aborted, false);
+  away.answer(away.pending()[0].id, { decision: 'allow' });
+  assert.equal(await decision, 'allowed-once');
+  assert.equal(shown.aborted, true);
+  assert.equal(turn.signal.aborted, false);
+});
+
+test('away on: with no desktop prompt the approval waits for the phone and times out', async () => {
+  const { away, pushes, desktop, ask } = setup({ config: { approvalTimeoutMinutes: 0.005 } });
+  await away.set(true);
+  const decision = ask('approval/request', approval());
+  await tick();
+  desktop.settle('unavailable');
+  await tick();
+  assert.equal(away.pending().length, 1);
+  assert.equal(pushes.length, 1);
+  assert.equal(await decision, 'rejected', 'an unused approval is rejected after the away timeout');
+  assert.equal(away.pending().length, 0);
+});
+
+test('away off releases the desktop prompt and stops the away timeout', async () => {
+  const { away, desktop, ask } = setup({ config: { approvalTimeoutMinutes: 0.005 } });
+  await away.set(true);
+  const decision = ask('approval/request', approval());
+  await tick();
+  assert.ok(desktop.seen);
+  await away.set(false);
+  assert.equal(away.pending().length, 1, 'the desktop can still answer');
+  let settled = false;
+  decision.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(settled, false, 'away mode no longer rejects it');
+  desktop.settle('allowed-once');
+  assert.equal(await decision, 'allowed-once');
+});

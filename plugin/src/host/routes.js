@@ -8,6 +8,10 @@ const json = (value, status = 200) => new Response(JSON.stringify(value), {
 });
 
 async function body(request) {
+  // CSRF: DSH's connection.fetch authenticates by cookie or token; without this check a malicious
+  // page could POST with Content-Type: text/plain (no preflight) and we'd parse it as {}.
+  const type = request.headers.get('content-type') ?? '';
+  if (!type.toLowerCase().startsWith('application/json')) return {};
   try { return await request.json(); } catch { return {}; }
 }
 
@@ -55,8 +59,10 @@ export function registerRoutes(ctx, { ready, changes }) {
     ['POST', '/api/pair/revoke', async (request) => {
       const rt = await ready;
       const { deviceId } = await body(request);
-      rt.phones.kickDevice(deviceId, '这台设备已在电脑上被移除');
+      // Remove first, then kick: a kicked phone can immediately try to resume; if it resumes
+      // while still in state it would reconnect successfully. Order matters.
       await rt.state.removeDevice(deviceId);
+      rt.phones.kickDevice(deviceId, '这台设备已在电脑上被移除');
       changes.bump();
       return json(await view());
     }],

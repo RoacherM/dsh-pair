@@ -44,8 +44,21 @@ function useState() {
   const [data, setData] = React.useState(null);
   const [error, setError] = React.useState(null);
   const revision = React.useRef(-1);
+  const inFlight = React.useRef(0); // guards against out-of-order /state responses
   const reload = React.useCallback(async () => {
-    try { const next = await call('GET', '/state'); revision.current = next.revision; setData(next); setError(null); } catch (e) { setError(e.message); }
+    const seq = ++inFlight.current;
+    try {
+      const next = await call('GET', '/state');
+      // A POST may have returned a newer snapshot while this GET was in flight; drop the stale one.
+      if (seq !== inFlight.current) return;
+      if (typeof next.revision === 'number' && next.revision < revision.current) return;
+      revision.current = next.revision;
+      setData(next);
+      setError(null);
+    } catch (e) {
+      if (seq !== inFlight.current) return;
+      setError(e.message);
+    }
   }, []);
   React.useEffect(() => {
     let stop = false;
@@ -64,7 +77,16 @@ function useState() {
     })();
     return () => { stop = true; abort.abort(); };
   }, [reload]);
-  return [data, error, setData];
+  // Actions return a fresh state too — route them through the same ordering guard.
+  const setDataGuarded = React.useCallback((next) => {
+    if (typeof next?.revision === 'number') {
+      if (next.revision < revision.current) return;
+      revision.current = next.revision;
+    }
+    inFlight.current++; // a POST response invalidates any /state still in flight
+    setData(next);
+  }, []);
+  return [data, error, setDataGuarded];
 }
 
 function Switch({ on, onChange, disabled }) {
@@ -205,8 +227,8 @@ function PairPage() {
               <div className="px-section-head"><h2>离开模式</h2></div>
               <div className="px-card px-away">
                 <div className="px-item-main">
-                  <b>{data.away.on ? '离开中：审批和提问会发到已配对的设备' : '在电脑前'}</b>
-                  <span>开启后，正在运行的会话会临时切换到「{data.away.preset}」权限（写工作区外的文件或执行高风险命令前需要审批），审批和提问改由已配对的设备处理，{data.away.on ? `已切换 ${data.away.sessions} 个会话。` : '关闭后恢复原来的权限。'}未处理的审批 30 分钟后自动拒绝。</span>
+                  <b>{data.away.on ? '离开中：审批和提问会发到电脑和已配对的设备' : '在电脑前'}</b>
+                  <span>开启后，正在运行的会话会临时切换到「{data.away.preset}」权限（写工作区外的文件或执行高风险命令前需要审批）。审批和提问会同时出现在电脑和已配对的设备上，哪边先答算哪边，已配对的设备还会收到推送。{data.away.on ? `已切换 ${data.away.sessions} 个会话。` : '关闭后恢复原来的权限。'}未处理的审批 30 分钟后自动拒绝。</span>
                 </div>
                 <Switch on={data.away.on} disabled={busy || data.devices.length === 0} onChange={(on) => act('POST', '/away', { on })} />
               </div>

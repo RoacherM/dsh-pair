@@ -128,14 +128,29 @@ button { font: inherit; color: inherit; }
 .md blockquote { margin: .5em 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--fg2); }
 .md.live::after { content: '▍'; animation: blink 1s steps(2) infinite; color: var(--fg3); }
 @keyframes blink { 50% { opacity: 0; } }
-.tool { border-radius: 12px; background: var(--l1); box-shadow: 0 0 0 1px var(--line); font-size: 13px; }
-.tool summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; list-style: none; }
+/* tool rows: plain one-liners that expand on tap */
+.tool { border-radius: 10px; background: transparent; font-size: 13px; }
+.tool summary { display: flex; align-items: baseline; gap: 6px; padding: 5px 0; list-style: none; cursor: pointer; }
 .tool summary::-webkit-details-marker { display: none; }
-.tool summary b { font: 600 12.5px ui-monospace, Menlo, monospace; flex: none; }
-.tool-sum { flex: 1; min-width: 0; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tool-state { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--warn); animation: pulse 1.1s infinite; }
-.tool.done .tool-state { background: var(--ok); animation: none; } .tool.err .tool-state { background: var(--err); animation: none; }
-.tool-out { margin: 0; padding: 8px 12px 10px; border-top: 1px solid var(--line); font: 12px/1.45 ui-monospace, Menlo, monospace; color: var(--fg2); white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto; }
+.tool-verb { font-size: 13px; font-weight: 500; color: var(--fg2); flex: none; }
+.tool.running .tool-verb { color: var(--fg); }
+.tool.err .tool-verb { color: var(--err); }
+.tool-sum { flex: 1; min-width: 0; color: var(--fg3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; }
+.tool-out { margin: 2px 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--l2); font: 12px/1.45 ui-monospace, Menlo, monospace; color: var(--fg2); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; }
+/* steps group: a foldable run of consecutive tool calls */
+.steps { display: flex; flex-direction: column; }
+.steps-head { display: flex; align-items: center; gap: 6px; padding: 5px 0; border: none; background: none; font: 13px/1 inherit; color: var(--fg2); text-align: left; cursor: pointer; }
+.steps-head .ico { width: 14px; height: 14px; color: var(--fg3); flex: none; transition: transform .15s; }
+.steps.open .steps-head .ico { transform: rotate(180deg); }
+.steps-label { font-weight: 500; }
+.steps-err { font-size: 12px; color: var(--err); }
+.steps-list { display: none; padding-left: 8px; border-left: 1.5px solid var(--line); margin-left: 1px; }
+.steps.open .steps-list { display: flex; flex-direction: column; }
+/* a single tool needs no head button */
+.steps:not(.multi) .steps-head { display: none; }
+.steps:not(.multi) .steps-list { display: flex; flex-direction: column; padding-left: 0; border-left: none; margin-left: 0; }
+/* pulse while running */
+.steps.running .steps-label { animation: pulse 1.2s ease-in-out infinite; }
 .pics { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .bubble .pics { margin-top: 8px; }
 .pic { position: relative; width: 100%; max-height: 60vh; border-radius: 10px; overflow: hidden; background: var(--l2); box-shadow: 0 0 0 1px var(--line); }
@@ -146,7 +161,13 @@ button { font: inherit; color: inherit; }
 .pic-note { position: absolute; inset: auto 8px 8px; font-size: 12px; color: var(--err); }
 .viewer { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .92); padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
 .viewer img { max-width: 100%; max-height: 100%; object-fit: contain; }
-.turn-end { height: 4px; } .note-line { height: auto; text-align: center; font-size: 12px; color: var(--fg3); }
+/* turn footer: shows "已工作 N 分 M 秒" and the reply's copy/share actions on one line */
+.turn-end { display: flex; align-items: center; gap: 8px; min-height: 24px; padding: 4px 0 8px; }
+.turn-end.bare { min-height: 4px; padding: 0; }
+.turn-note { font-size: 12px; color: var(--fg3); flex: 1; }
+/* msg-actions moves into the turn-end; hide the CSS-:has rule version so it doesn't double */
+.msg.assistant:has(+ .turn-end) .msg-actions { display: none; }
+.turn-end .msg-actions { display: flex; }
 .thinking { display: flex; gap: 5px; padding: 6px 2px; } .thinking i { width: 7px; height: 7px; border-radius: 50%; background: var(--fg3); animation: pulse 1.2s infinite; }
 .thinking i:nth-child(2) { animation-delay: .15s; } .thinking i:nth-child(3) { animation-delay: .3s; }
 .pending-inline { padding: 8px 0; }
@@ -201,14 +222,7 @@ button { font: inherit; color: inherit; }
 .scanner p, .scanner button { position: relative; }
 .scanner .btn { background: rgba(255,255,255,.18); color: #fff; box-shadow: none; }
 
-/* folded tool calls */
-.steps { border-radius: 12px; background: var(--l1); box-shadow: 0 0 0 1px var(--line); font-size: 13px; }
-.steps > summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; list-style: none; }
-.steps > summary::-webkit-details-marker { display: none; }
-.steps > summary b { font: 600 12.5px ui-monospace, Menlo, monospace; flex: none; }
-.steps.done > summary .tool-state { background: var(--ok); animation: none; } .steps.err > summary .tool-state { background: var(--err); animation: none; }
-.steps-list { display: flex; flex-direction: column; gap: 6px; padding: 0 8px 8px; }
-.steps-list .tool { box-shadow: none; background: var(--l2); }
+
 /* "…" menu */
 .pop-bg { position: fixed; inset: 0; z-index: 45; }
 .popover { position: absolute; top: calc(var(--safe-t) + 60px); right: 12px; min-width: 210px; padding: 6px; border-radius: 22px;
@@ -246,7 +260,7 @@ button { font: inherit; color: inherit; }
 .cmd { border-radius: 12px; background: var(--l1); box-shadow: 0 0 0 1px var(--line); font-size: 13px; }
 .cmd-line { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
 .cmd-line b { font: 600 12.5px ui-monospace, Menlo, monospace; flex: none; }
-.cmd.done .tool-state { background: var(--ok); animation: none; } .cmd.err .tool-state { background: var(--err); animation: none; }
+.cmd.done .cmd-line b { color: var(--fg2); } .cmd.err .cmd-line b { color: var(--err); }
 .cmd-out { padding: 0 12px 8px 28px; color: var(--fg2); white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
 .cmd-out:empty { display: none; } .cmd.err .cmd-out { color: var(--err); }
 
@@ -260,8 +274,9 @@ button { font: inherit; color: inherit; }
   .effort:not(.on):hover, .model-name:hover, .link-btn:hover, .code-copy:hover { background: var(--hover); }
   .round-btn:hover, .sheet-item:hover { background: var(--l2); }
   .send:hover:not(:disabled) { filter: brightness(1.08); }
-  .tool summary, .steps > summary { cursor: pointer; }
-  .tool summary:hover, .steps > summary:hover { background: var(--hover); border-radius: 12px; }
+  .tool summary { cursor: pointer; }
+  .tool summary:hover { background: var(--hover); border-radius: 8px; }
+  .steps-head:hover { background: var(--hover); border-radius: 8px; }
 }
 .slash-item.on { background: color-mix(in srgb, var(--fg) 9%, transparent); }
 :focus-visible { outline: 2px solid color-mix(in srgb, var(--send) 70%, transparent); outline-offset: 1px; }
